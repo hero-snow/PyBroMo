@@ -12,7 +12,10 @@ from . import loadutils as lu
 from . import diffusion
 from . import timestamps
 from . import plot
-from . import plotter
+try:
+    from . import plotter
+except ImportError:  # pragma: no cover - optional GUI dependency
+    plotter = None
 
 from .utils import hdf5
 

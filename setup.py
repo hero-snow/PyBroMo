@@ -22,7 +22,7 @@ setup(name = project_name,
       author_email = 'tritemio@gmail.com',
       url = 'http://opensmfs.github.io/PyBroMo/',
       download_url = 'https://github.com/OpenSMFS/PyBroMo',
-      install_requires = ['numpy', 'setuptools', 'tables', 'matplotlib',
+      install_requires = ['numpy', 'scipy', 'setuptools', 'tables', 'matplotlib',
                           'phconvert'],
       license = 'GPLv2',
       description = ('Simulator for confocal single-molecule fluorescence '

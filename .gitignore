@@ -7,3 +7,4 @@ notebooks/.ipynb_checkpoints/
 build
 pybromo.egg-info
 dist/
+.vscode/

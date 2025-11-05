@@ -1,0 +1,27 @@
+[project]
+name = "pybromo"
+version = "0.8.1+forked.2025.10"
+description = "A simulator for single molecule FRET experiments of freely diffusing particles."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jupyterlab>=4.4.10",
+    "matplotlib>=3.10.7",
+    "phconvert>=0.9.1",
+]
+
+[dependency-groups]
+dev = [
+    "cython>=3.1.6",
+    "fretbursts",
+    "pybromo",
+]
+
+[tool.uv.sources]
+fretbursts = { git = "https://github.com/OpenSMFS/FRETBursts.git" }
+pybromo = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    ".",
+]

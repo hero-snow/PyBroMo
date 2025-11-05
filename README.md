@@ -1,3 +1,13 @@
+# PyBroMo (Forked Version)
+
+This is a personal fork of [OpenSMFS/PyBroMo](https://github.com/OpenSMFS/PyBroMo), originally version 0.8.1.  
+The original project is no longer actively maintained, and this fork is modified for private use.  
+Compatibility with the original version is not guaranteed.
+
+## Fork Notice
+
+Versioning follows Semantic Versioning (SemVer), with metadata indicating the fork date (e.g., `0.8.1+forked.2025.10`).
+
 # PyBroMo Overview
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3256149.svg)](https://doi.org/10.5281/zenodo.3256149)

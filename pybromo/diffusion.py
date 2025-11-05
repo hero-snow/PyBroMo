@@ -18,6 +18,11 @@ import json
 
 import numpy as np
 from numpy import array, sqrt
+
+try:  # Optional dependency for accelerating diffusion propagation
+    from numba import njit, prange
+except ImportError:  # pragma: no cover - optional optimization
+    njit = prange = None
 import tables
 
 from .storage import TrajectoryStore, TimestampStore, ExistingArrayError
@@ -258,6 +263,53 @@ def wrap_mirror(a, a1, a2):
     a[a > a2] = a2 - (a[a > a2] - a2)
     a[a < a1] = a1 + (a1 - a[a < a1])
     return a
+
+
+_NUMBA_AVAILABLE = njit is not None
+
+
+if _NUMBA_AVAILABLE:
+
+    @njit(cache=True)
+    def _wrap_periodic_scalar_numba(value, lower, upper):
+        span = upper - lower
+        shifted = value - lower
+        wrapped = shifted % span
+        return wrapped + lower
+
+
+    @njit(parallel=True, cache=True)
+    def _propagate_periodic_numba(start_pos, delta_pos, bounds):
+        num_particles = start_pos.shape[0]
+        time_size = delta_pos.shape[2]
+        positions = np.empty((num_particles, 3, time_size), dtype=np.float64)
+        end_pos = np.empty((num_particles, 3), dtype=np.float64)
+        x_low, x_high = bounds[0, 0], bounds[0, 1]
+        y_low, y_high = bounds[1, 0], bounds[1, 1]
+        z_low, z_high = bounds[2, 0], bounds[2, 1]
+
+        for idx in prange(num_particles):
+            x_val = start_pos[idx, 0]
+            y_val = start_pos[idx, 1]
+            z_val = start_pos[idx, 2]
+            for t_idx in range(time_size):
+                x_val = _wrap_periodic_scalar_numba(
+                    x_val + delta_pos[idx, 0, t_idx], x_low, x_high)
+                y_val = _wrap_periodic_scalar_numba(
+                    y_val + delta_pos[idx, 1, t_idx], y_low, y_high)
+                z_val = _wrap_periodic_scalar_numba(
+                    z_val + delta_pos[idx, 2, t_idx], z_low, z_high)
+                positions[idx, 0, t_idx] = x_val
+                positions[idx, 1, t_idx] = y_val
+                positions[idx, 2, t_idx] = z_val
+            end_pos[idx, 0] = x_val
+            end_pos[idx, 1] = y_val
+            end_pos[idx, 2] = z_val
+        return positions, end_pos
+
+
+else:  # pragma: no cover - optional optimization
+    _propagate_periodic_numba = None
 
 
 class NoMatchError(Exception):
@@ -575,40 +627,49 @@ class ParticlesSimulation(object):
         """
         time_size = int(time_size)
         num_particles = self.num_particles
-        if total_emission:
-            em = np.zeros(time_size, dtype=np.float32)
-        else:
-            em = np.zeros((num_particles, time_size), dtype=np.float32)
 
         POS = []
-        # pos_w = np.zeros((3, c_size))
-        for i, sigma_1d in enumerate(self.sigma_1d):
-            delta_pos = rs.normal(loc=0, scale=sigma_1d,
-                                  size=3 * time_size)
-            delta_pos = delta_pos.reshape(3, time_size)
-            pos = np.cumsum(delta_pos, axis=-1, out=delta_pos)
-            pos += start_pos[i]
-
-            # Coordinates wrapping using the specified boundary conditions
-            for coord in (0, 1, 2):
-                pos[coord] = wrap_func(pos[coord], *self.box.b[coord])
-
-            # Sample the PSF along i-th trajectory then square to account
-            # for emission and detection PSF.
-            Ro = sqrt(pos[0]**2 + pos[1]**2)  # radial pos. on x-y plane
-            Z = pos[2]
-            current_em = self.psf.eval_xz(Ro, Z)**2
+        if num_particles == 0 or time_size == 0:
             if total_emission:
-                # Add the current particle emission to the total emission
-                em += current_em.astype(np.float32)
+                em = np.zeros(time_size, dtype=np.float32)
             else:
-                # Store the individual emission of current particle
-                em[i] = current_em.astype(np.float32)
-            if save_pos:
-                pos_save = np.vstack((Ro, Z)) if radial else pos
-                POS.append(pos_save[np.newaxis, :, :])
-            # Update start_pos in-place for current particle
-            start_pos[i] = pos[:, -1:]
+                em = np.zeros((num_particles, time_size), dtype=np.float32)
+            return POS, em
+
+        sigma = np.asarray(self.sigma_1d, dtype=np.float64)
+        delta_pos = rs.normal(loc=0.0, scale=1.0,
+                              size=(num_particles, 3, time_size)).astype(np.float64)
+        delta_pos *= sigma[:, np.newaxis, np.newaxis]
+
+        bounds = np.asarray(self.box.b, dtype=np.float64)
+        use_numba = (_NUMBA_AVAILABLE and wrap_func is wrap_periodic)
+
+        if use_numba:
+            start_flat = np.ascontiguousarray(start_pos[:, :, 0], dtype=np.float64)
+            pos, end_pos = _propagate_periodic_numba(start_flat, delta_pos, bounds)
+        else:
+            pos = np.cumsum(delta_pos, axis=-1)
+            pos += start_pos
+            for coord, (lower, upper) in enumerate(bounds):
+                pos[:, coord, :] = wrap_func(pos[:, coord, :], lower, upper)
+            end_pos = pos[:, :, -1]
+
+        # Sample the PSF along each trajectory then square to account
+        # for emission and detection PSF.
+        Ro = sqrt(pos[:, 0, :]**2 + pos[:, 1, :]**2)
+        Z = pos[:, 2, :]
+        current_em = self.psf.eval_xz(Ro, Z) ** 2
+        if total_emission:
+            em = current_em.sum(axis=0, dtype=np.float64).astype(np.float32)
+        else:
+            em = current_em.astype(np.float32)
+
+        if save_pos:
+            pos_save = np.stack((Ro, Z), axis=1) if radial else pos
+            POS.append(pos_save.astype(np.float32))
+
+        # Update start_pos in-place for each particle
+        start_pos[...] = end_pos[:, :, np.newaxis]
         return POS, em
 
     def simulate_diffusion(self, save_pos=False, total_emission=True,

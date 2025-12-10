@@ -259,3 +259,58 @@ def test_TimestampSimulation():
         rs = np.random.RandomState(_SEED)
         mix_sim.run(rs=rs, overwrite=True)
         mix_sim.save_photon_hdf5()
+
+def test_vectorized_implementation():
+    """
+    Test that the vectorized implementation produces numerically consistent results.
+    """
+    # Define the original, non-vectorized implementation for comparison
+    def original_sim_trajectories(self, time_size, start_pos, rs,
+                                  total_emission=False, save_pos=False, radial=False,
+                                  wrap_func=pbm.diffusion.wrap_periodic):
+        time_size = int(time_size)
+        num_particles = self.num_particles
+        if total_emission:
+            em = np.zeros(time_size, dtype=np.float32)
+        else:
+            em = np.zeros((num_particles, time_size), dtype=np.float32)
+        POS = []
+        for i, sigma_1d in enumerate([np.sqrt(2 * par.D * self.t_step) for par in self.particles]):
+            delta_pos = rs.normal(loc=0, scale=sigma_1d, size=3 * time_size)
+            delta_pos = delta_pos.reshape(3, time_size)
+            pos = np.cumsum(delta_pos, axis=-1, out=delta_pos)
+            pos += start_pos[i]
+            for coord in (0, 1, 2):
+                pos[coord] = wrap_func(pos[coord], *self.box.b[coord])
+            Ro = np.sqrt(pos[0]**2 + pos[1]**2)
+            Z = pos[2]
+            current_em = self.psf.eval_xz(Ro, Z)**2
+            if total_emission:
+                em += current_em.astype(np.float32)
+            else:
+                em[i] = current_em.astype(np.float32)
+            if save_pos:
+                pos_save = np.vstack((Ro, Z)) if radial else pos
+                POS.append(pos_save[np.newaxis, :, :])
+            start_pos[i] = pos[:, -1:]
+        return POS, em
+
+    # Initialize parameters
+    rs = np.random.RandomState(_SEED)
+    P = pbm.Particles(num_particles=10, D=D1, box=box, rs=rs)
+    t_max = 0.001
+    time_size = int(t_max / t_step)
+
+    # Run with original implementation
+    S_orig = pbm.ParticlesSimulation(t_step=t_step, t_max=t_max,
+                                     particles=P, box=box, psf=pbm.NumericPSF())
+    rs_orig = np.random.RandomState(_SEED)
+    _, em_orig = original_sim_trajectories(S_orig, time_size, P.positions.copy(), rs=rs_orig)
+
+    # Run with vectorized implementation
+    S_vec = pbm.ParticlesSimulation(t_step=t_step, t_max=t_max,
+                                    particles=P, box=box, psf=pbm.NumericPSF())
+    rs_vec = np.random.RandomState(_SEED)
+    _, em_vec = S_vec._sim_trajectories(time_size, P.positions.copy(), rs=rs_vec)
+
+    assert np.allclose(em_orig, em_vec, atol=1e-5)

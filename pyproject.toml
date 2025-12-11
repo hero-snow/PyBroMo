@@ -1,63 +1,33 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "pybromo"
-version = "0.9.0"
+version = "0.8.1+forked.2025.10"
 description = "A simulator for single molecule FRET experiments of freely diffusing particles."
 readme = "README.md"
-requires-python = ">=3.9"
-authors = [
-  { name="Antonino Ingargiola", email="tritemio@gmail.com" },
-]
-license = { text = "GPL-2.0-only" }
-classifiers=[
-    "Intended Audience :: Science/Research",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Topic :: Scientific/Engineering",
-]
-keywords = [
-    "single-molecule FRET",
-    "smFRET",
-    "biophysics",
-    "confocal",
-    "freely-diffusing",
-    "brownian-motion",
-    "simulator",
-]
+requires-python = ">=3.13"
 dependencies = [
-    "numpy",
-    "scipy",
-    "tables", # pytables
-    "matplotlib>=3.1",
-    "phconvert>=0.8",
-    "jupyterlab",
-    "numba",
+    "bleach>=6.3.0",
+    "jupyterlab>=4.4.10",
+    "matplotlib>=3.10.7",
+    "nbconvert>=7.16.4",
+    "phconvert>=0.9.1",
+    "ruff>=0.14.8",
+    "tinycss2>=1.5.1",
 ]
 
-[project.optional-dependencies]
-gpu = ["cupy"]
+[dependency-groups]
 dev = [
-    "cython",
-    "fretbursts @ git+https://github.com/OpenSMFS/FRETBursts.git",
+    "cython>=3.1.6",
+    "fretbursts",
+    "pybromo",
+    "ruff>=0.14.3",
 ]
 
-[project.urls]
-Homepage = "http://opensmfs.github.io/PyBroMo/"
-Download = "https://github.com/OpenSMFS/PyBroMo"
+[tool.uv.sources]
+fretbursts = { git = "https://github.com/OpenSMFS/FRETBursts.git" }
+pybromo = { workspace = true }
 
-
-[tool.setuptools.packages.find]
-include = ["pybromo*"]
-
-[tool.setuptools.package-data]
-pybromo = ["psf_data/*"]
-
-[tool.flake8]
-max-line-length = 89
+[tool.uv.workspace]
+members = [
+    ".",
+    ".",
+]

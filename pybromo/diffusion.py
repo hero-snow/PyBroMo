@@ -391,7 +391,7 @@ class ParticlesSimulation(object):
 
     @property
     def sigma_1d(self):
-        return [np.sqrt(2 * par.D * self.t_step) for par in self.particles]
+        return np.sqrt(2 * self.particles.diffusion_coeff * self.t_step)
 
     def __repr__(self):
         pM = self.concentration(pM=True)
@@ -553,6 +553,14 @@ class ParticlesSimulation(object):
                           wrap_func=wrap_periodic):
         """Simulate (in-memory) `time_size` steps of trajectories.
 
+        This function is a performance-critical part of the simulation.
+        The original implementation iterated over each particle individually, which
+        was a significant bottleneck. The loop has been vectorized using NumPy to
+        process all particles simultaneously, resulting in a substantial
+        performance improvement. This is achieved by generating random
+        displacements for all particles in a single batch and using array-wise
+        operations for all calculations.
+
         Simulate Brownian motion diffusion and emission of all the particles.
         Uses the attributes: num_particles, sigma_1d, box, psf.
 
@@ -580,36 +588,45 @@ class ParticlesSimulation(object):
         else:
             em = np.zeros((num_particles, time_size), dtype=np.float32)
 
-        POS = []
-        # pos_w = np.zeros((3, c_size))
-        for i, sigma_1d in enumerate(self.sigma_1d):
-            delta_pos = rs.normal(loc=0, scale=sigma_1d,
-                                  size=3 * time_size)
-            delta_pos = delta_pos.reshape(3, time_size)
-            pos = np.cumsum(delta_pos, axis=-1, out=delta_pos)
-            pos += start_pos[i]
+        POS = np.empty((num_particles, 2 if radial else 3, time_size),
+                       dtype=np.float32)
 
-            # Coordinates wrapping using the specified boundary conditions
-            for coord in (0, 1, 2):
-                pos[coord] = wrap_func(pos[coord], *self.box.b[coord])
+        # Reshape sigma_1d for broadcasting
+        sigma_1d = self.sigma_1d.reshape(-1, 1, 1)
 
-            # Sample the PSF along i-th trajectory then square to account
-            # for emission and detection PSF.
-            Ro = sqrt(pos[0]**2 + pos[1]**2)  # radial pos. on x-y plane
-            Z = pos[2]
-            current_em = self.psf.eval_xz(Ro, Z)**2
-            if total_emission:
-                # Add the current particle emission to the total emission
-                em += current_em.astype(np.float32)
+        # Generate random displacements for all particles at once
+        delta_pos = rs.normal(loc=0, scale=sigma_1d,
+                              size=(num_particles, 3, time_size))
+
+        # Calculate trajectories using cumsum
+        pos = np.cumsum(delta_pos, axis=-1, out=delta_pos)
+        pos += start_pos
+
+        # Apply boundary conditions
+        for coord in (0, 1, 2):
+            pos[:, coord, :] = wrap_func(pos[:, coord, :], *self.box.b[coord])
+
+        # Calculate emission rates
+        Ro = np.sqrt(pos[:, 0, :]**2 + pos[:, 1, :]**2)
+        Z = pos[:, 2, :]
+        current_em = self.psf.eval_xz(Ro, Z)**2
+
+        if total_emission:
+            em = np.sum(current_em, axis=0, dtype=np.float32)
+        else:
+            em = current_em.astype(np.float32)
+
+        if save_pos:
+            if radial:
+                POS[:, 0, :] = Ro
+                POS[:, 1, :] = Z
             else:
-                # Store the individual emission of current particle
-                em[i] = current_em.astype(np.float32)
-            if save_pos:
-                pos_save = np.vstack((Ro, Z)) if radial else pos
-                POS.append(pos_save[np.newaxis, :, :])
-            # Update start_pos in-place for current particle
-            start_pos[i] = pos[:, -1:]
-        return POS, em
+                POS = pos.astype(np.float32)
+
+        # Update start_pos for the next chunk
+        start_pos[:] = pos[:, :, -1:]
+
+        return (np.split(POS, num_particles) if save_pos else []), em
 
     def simulate_diffusion(self, save_pos=False, total_emission=True,
                            radial=False, rs=None, seed=1, path='./',

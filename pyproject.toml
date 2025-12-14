@@ -3,7 +3,7 @@ name = "pybromo"
 version = "0.8.1+forked.2025.10"
 description = "A simulator for single molecule FRET experiments of freely diffusing particles."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "jupyterlab>=4.4.10",
     "matplotlib>=3.10.7",

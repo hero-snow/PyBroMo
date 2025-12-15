@@ -15,6 +15,7 @@ dev = [
     "cython>=3.1.6",
     "fretbursts",
     "pybromo",
+    "ruff>=0.14.9",
 ]
 
 [tool.uv.sources]

@@ -757,6 +757,14 @@ class ParticlesSimulation(object):
                                 position=None, sort=True):
         """Compute timestamps from timetraces of counts.
 
+        This function has been optimized to avoid python loops and instead uses
+        vectorized numpy operations. It finds where photons are emitted
+        (counts > 0) and then uses np.repeat to generate the correct number
+        of timestamps, particle IDs, and positions for each emission event.
+        This provides a significant performance improvement over the previous
+        loop-based implementation. It also fixes a bug in the original
+        implementation that caused an error when processing particle positions.
+
         This function operates on a given "group" of particles
         (a population) and a given time chunk.
         Number of particles is `counts.shape[0]` and number of time bins is
@@ -790,8 +798,12 @@ class ParticlesSimulation(object):
             pos_part = position.shape[0]
             spatial_dims = position.shape[1]
             assert pos_part <= counts.shape[0] <= pos_part + 1
-        max_counts = counts.max()
-        if max_counts == 0:
+
+        # Find where photons are emitted
+        p_idx, t_idx = np.nonzero(counts)
+
+        # If no photons, return empty arrays
+        if p_idx.size == 0:
             empty_pos = None
             if position is not None:
                 empty_pos = np.empty(shape=(0, spatial_dims), dtype=np.float32)
@@ -799,52 +811,44 @@ class ParticlesSimulation(object):
                     np.array([], dtype=np.int64),    # particles
                     empty_pos)  # positions
 
-        # These lists will contain one array per particle
-        ts_times_parlist = []
-        ts_particles_parlist = []
-        ts_positions_parlist = []
-        # Loop for each particle to compute timestamps
-        for ip, counts_ip in enumerate(counts):
-            # Compute timestamps for particle ip for all bins with counts > 0
-            ts_times_by_num_counts = []
-            ts_positions_by_num_counts = []
-            for v in range(1, max_counts + 1):
-                mask = counts_ip >= v
-                ts_times_by_num_counts.append(time_axis[mask])
-                if position is not None:
-                    is_bg_particle = ip == position.shape[0]
-                    if is_bg_particle:
-                        shape = (mask.sum(), position.shape[1])
-                        pos = np.full(shape, np.nan, dtype='float32')
-                    else:
-                        pos = position[ip, :, mask]
-                    # list of 2D arrays
-                    ts_positions_by_num_counts.append(pos)
+        # Get the number of counts for each emission event
+        counts_at_photons = counts[p_idx, t_idx]
 
-            # Stack the timestamps from different "counts"
-            ts = np.hstack(ts_times_by_num_counts)
-            ts_times_parlist.append(ts)
-            ts_particles_parlist.append(np.full(ts.size, ip, dtype='u1'))
-            if position is not None:
-                # concatenate 2D arrays by columns
-                pos_current_particle = np.vstack(ts_positions_by_num_counts)
-                ts_positions_parlist.append(pos_current_particle)
+        # Repeat the indices for each photon
+        p_idx_rep = np.repeat(p_idx, counts_at_photons)
+        t_idx_rep = np.repeat(t_idx, counts_at_photons)
 
-        # Merge the arrays of different particles
-        ts_times = np.hstack(ts_times_parlist)
-        ts_particles = np.hstack(ts_particles_parlist)
-        # ts_positions are 2D, concatenate columns
-        # (rows are spatial coordinates)
+        # Generate timestamps and particle IDs
+        ts_times = time_axis[t_idx_rep]
+        ts_particles = p_idx_rep.astype('u1')
+
         ts_positions = None
         if position is not None:
-            ts_positions = np.vstack(ts_positions_parlist)
+            # Handle background particles which don't have a position
+            num_pos_particles = position.shape[0]
+            is_not_bg = p_idx_rep < num_pos_particles
+
+            # Create the final positions array, initialized with NaNs
+            ts_positions = np.full((p_idx_rep.size, position.shape[1]),
+                                   np.nan, dtype='float32')
+
+            # Get the particle and time indices for non-background photons
+            p_idx_pos = p_idx_rep[is_not_bg]
+            t_idx_pos = t_idx_rep[is_not_bg]
+
+            # Retrieve the positions for the non-background photons
+            # position is (particle, coord, time)
+            # We want to get position[particle_index, :, time_index]
+            # Advanced indexing does this correctly.
+            if p_idx_pos.size > 0:
+                ts_positions[is_not_bg] = position[p_idx_pos, :, t_idx_pos]
 
         if sort:
             # Sort merged timestamps (from all particles)
             index_sort = ts_times.argsort(kind='mergesort')
             ts_times = ts_times[index_sort]
             ts_particles = ts_particles[index_sort]
-            if position is not None:
+            if ts_positions is not None:
                 ts_positions = ts_positions[index_sort]
 
         return ts_times, ts_particles, ts_positions

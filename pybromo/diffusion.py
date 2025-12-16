@@ -784,63 +784,46 @@ class ParticlesSimulation(object):
             offset to the returned particles array to obtain
             the real particle ID.
         """
+        # This function has been vectorized to eliminate Python loops, leading to a
+        # significant performance improvement. The original implementation iterated
+        # through each particle and count value, which was a major bottleneck. The
+        # new implementation uses NumPy's `nonzero` to find all non-zero counts
+        # at once and `repeat` to efficiently generate timestamps, resulting in a
+        # much faster execution time.
         if position is not None:
-            # counts.shape[0] must be equal to position.shape[0]
-            # or exceed it by 1 when it contains a background trace
             pos_part = position.shape[0]
             spatial_dims = position.shape[1]
             assert pos_part <= counts.shape[0] <= pos_part + 1
-        max_counts = counts.max()
-        if max_counts == 0:
+
+        if counts.max() == 0:
             empty_pos = None
             if position is not None:
                 empty_pos = np.empty(shape=(0, spatial_dims), dtype=np.float32)
-            return (np.array([], dtype=np.int64),    # timestamps
-                    np.array([], dtype=np.int64),    # particles
-                    empty_pos)  # positions
+            return (np.array([], dtype=np.int64),
+                    np.array([], dtype=np.int64),
+                    empty_pos)
 
-        # These lists will contain one array per particle
-        ts_times_parlist = []
-        ts_particles_parlist = []
-        ts_positions_parlist = []
-        # Loop for each particle to compute timestamps
-        for ip, counts_ip in enumerate(counts):
-            # Compute timestamps for particle ip for all bins with counts > 0
-            ts_times_by_num_counts = []
-            ts_positions_by_num_counts = []
-            for v in range(1, max_counts + 1):
-                mask = counts_ip >= v
-                ts_times_by_num_counts.append(time_axis[mask])
-                if position is not None:
-                    is_bg_particle = ip == position.shape[0]
-                    if is_bg_particle:
-                        shape = (mask.sum(), position.shape[1])
-                        pos = np.full(shape, np.nan, dtype='float32')
-                    else:
-                        pos = position[ip, :, mask]
-                    # list of 2D arrays
-                    ts_positions_by_num_counts.append(pos)
+        # Find the indices of all non-zero counts
+        particles, times = np.nonzero(counts)
+        num_counts = counts[particles, times]
 
-            # Stack the timestamps from different "counts"
-            ts = np.hstack(ts_times_by_num_counts)
-            ts_times_parlist.append(ts)
-            ts_particles_parlist.append(np.full(ts.size, ip, dtype='u1'))
-            if position is not None:
-                # concatenate 2D arrays by columns
-                pos_current_particle = np.vstack(ts_positions_by_num_counts)
-                ts_positions_parlist.append(pos_current_particle)
+        # Repeat the indices based on the count values
+        ts_particles = np.repeat(particles, num_counts)
+        ts_times = np.repeat(time_axis[times], num_counts)
 
-        # Merge the arrays of different particles
-        ts_times = np.hstack(ts_times_parlist)
-        ts_particles = np.hstack(ts_particles_parlist)
-        # ts_positions are 2D, concatenate columns
-        # (rows are spatial coordinates)
         ts_positions = None
         if position is not None:
-            ts_positions = np.vstack(ts_positions_parlist)
+            # Handle background particles by creating a NaN-filled position array
+            is_bg_particle = particles >= position.shape[0]
+            pos = np.full((len(particles), position.shape[1]), np.nan, dtype='float32')
+
+            # Fill in positions for non-background particles
+            non_bg_mask = ~is_bg_particle
+            pos[non_bg_mask] = position[particles[non_bg_mask], :, times[non_bg_mask]]
+
+            ts_positions = np.repeat(pos, num_counts, axis=0)
 
         if sort:
-            # Sort merged timestamps (from all particles)
             index_sort = ts_times.argsort(kind='mergesort')
             ts_times = ts_times[index_sort]
             ts_particles = ts_particles[index_sort]

@@ -314,3 +314,81 @@ def test_vectorized_implementation():
     _, em_vec = S_vec._sim_trajectories(time_size, P.positions.copy(), rs=rs_vec)
 
     assert np.allclose(em_orig, em_vec, atol=1e-5)
+
+
+def test_timestamps_from_counts_vectorized():
+    """
+    Test that the vectorized implementation of `_timestamps_from_counts`
+    produces numerically consistent results with the original implementation.
+    """
+    # Original, non-vectorized implementation for comparison
+    def original_timestamps_from_counts(counts, time_axis, max_rate,
+                                        position=None, sort=True):
+        if position is not None:
+            pos_part = position.shape[0]
+            spatial_dims = position.shape[1]
+            assert pos_part <= counts.shape[0] <= pos_part + 1
+        max_counts = counts.max()
+        if max_counts == 0:
+            empty_pos = None
+            if position is not None:
+                empty_pos = np.empty(shape=(0, spatial_dims), dtype=np.float32)
+            return (np.array([], dtype=np.int64),
+                    np.array([], dtype=np.int64),
+                    empty_pos)
+
+        ts_times_parlist = []
+        ts_particles_parlist = []
+        ts_positions_parlist = []
+        for ip, counts_ip in enumerate(counts):
+            ts_times_by_num_counts = []
+            ts_positions_by_num_counts = []
+            for v in range(1, max_counts + 1):
+                mask = counts_ip >= v
+                ts_times_by_num_counts.append(time_axis[mask])
+                if position is not None:
+                    is_bg_particle = ip == position.shape[0]
+                    if is_bg_particle:
+                        shape = (mask.sum(), position.shape[1])
+                        pos = np.full(shape, np.nan, dtype='float32')
+                    else:
+                        pos = position[ip, :, mask]
+                    ts_positions_by_num_counts.append(pos)
+            ts = np.hstack(ts_times_by_num_counts)
+            ts_times_parlist.append(ts)
+            ts_particles_parlist.append(np.full(ts.size, ip, dtype='u1'))
+            if position is not None:
+                pos_current_particle = np.vstack(ts_positions_by_num_counts)
+                ts_positions_parlist.append(pos_current_particle)
+        ts_times = np.hstack(ts_times_parlist)
+        ts_particles = np.hstack(ts_particles_parlist)
+        ts_positions = None
+        if position is not None:
+            ts_positions = np.vstack(ts_positions_parlist)
+        if sort:
+            index_sort = ts_times.argsort(kind='mergesort')
+            ts_times = ts_times[index_sort]
+            ts_particles = ts_particles[index_sort]
+            if position is not None:
+                ts_positions = ts_positions[index_sort]
+        return ts_times, ts_particles, ts_positions
+
+    # Generate sample data
+    rs = np.random.RandomState(_SEED)
+    counts = rs.randint(0, 5, size=(10, 1000), dtype=np.uint8)
+    time_axis = np.arange(1000, dtype=np.int64) * 10
+    position = rs.rand(10, 3, 1000).astype(np.float32)
+
+    # Run with original implementation
+    ts_orig, p_orig, pos_orig = original_timestamps_from_counts(
+        counts.copy(), time_axis.copy(), max_rate=1, position=position.copy())
+
+    # Run with vectorized implementation
+    S = pbm.ParticlesSimulation
+    ts_vec, p_vec, pos_vec = S._timestamps_from_counts(
+        counts.copy(), time_axis.copy(), max_rate=1, position=position.copy())
+
+    # Assert that the results are identical
+    assert np.array_equal(ts_orig, ts_vec)
+    assert np.array_equal(p_orig, p_vec)
+    assert np.allclose(pos_orig, pos_vec, equal_nan=True)

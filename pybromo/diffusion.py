@@ -602,9 +602,26 @@ class ParticlesSimulation(object):
         pos = np.cumsum(delta_pos, axis=-1, out=delta_pos)
         pos += start_pos
 
-        # Apply boundary conditions
-        for coord in (0, 1, 2):
-            pos[:, coord, :] = wrap_func(pos[:, coord, :], *self.box.b[coord])
+        # Vectorized boundary conditions for performance.
+        # This approach avoids a Python loop over coordinates, which can be a
+        # bottleneck for large simulations. The boundary box limits are
+        # reshaped to allow for broadcasting and vectorized operations.
+        b1 = self.box.b[:, 0].reshape(1, 3, 1)
+        b2 = self.box.b[:, 1].reshape(1, 3, 1)
+        if wrap_func is wrap_periodic:
+            pos -= b1
+            pos = np.mod(pos, b2 - b1)
+            pos += b1
+        elif wrap_func is wrap_mirror:
+            # The following is a vectorized version of:
+            # pos[pos > b2] = 2 * b2 - pos[pos > b2]
+            # pos[pos < b1] = 2 * b1 - pos[pos < b1]
+            pos = np.where(pos > b2, 2 * b2 - pos, pos)
+            pos = np.where(pos < b1, 2 * b1 - pos, pos)
+        else:
+            # Fallback to the loop for unknown or custom wrap functions.
+            for coord in (0, 1, 2):
+                pos[:, coord, :] = wrap_func(pos[:, coord, :], *self.box.b[coord])
 
         # Calculate emission rates
         Ro = np.sqrt(pos[:, 0, :]**2 + pos[:, 1, :]**2)

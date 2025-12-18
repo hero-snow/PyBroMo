@@ -186,7 +186,6 @@ def _test_diffusion_sim_core(psf):
                                     save_pos=True, wrap_func=wrap_func)
 
     POS, em = sim
-    POS = np.concatenate(POS, axis=0)
     # x, y, z = POS[:, :, 0], POS[:, :, 1], POS[:, :, 2]
     # r_squared = x**2 + y**2 + z**2
 

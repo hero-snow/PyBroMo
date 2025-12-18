@@ -189,8 +189,11 @@ class NumericPSF:
 
 def load_PSFLab_file(fname):
     """Load the array `data` in the .mat file `fname`."""
-    if os.path.exists(fname) or os.path.exists(fname + '.mat'):
-        return loadmat(fname)['data']
+    if os.path.exists(fname):
+        return loadmat(fname)["data"]
+    fname_with_ext = str(fname) + ".mat"
+    if os.path.exists(fname_with_ext):
+        return loadmat(fname_with_ext)["data"]
     else:
         raise IOError("Can't find PSF file '%s'" % fname)
 

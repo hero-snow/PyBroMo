@@ -8,7 +8,28 @@ dependencies = [
     "jupyterlab>=4.4.10",
     "matplotlib>=3.10.7",
     "phconvert>=0.9.1",
+    "numpy",
+    "scipy",
+    "tables",
 ]
+keywords = ["single-molecule FRET smFRET biophysics confocal freely-diffusing brownian-motion simulator"]
+authors = [
+    {name = "Antonino Ingargiola", email = "tritemio@gmail.com"},
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.4",
+    "Programming Language :: Python :: 3.5",
+    "Topic :: Scientific/Engineering",
+]
+license = "GPL-2.0-only"
+
+[project.urls]
+Homepage = "https://github.com/hero-snow/PyBroMo"
+Downloads = "https://github.com/hero-snow/PyBroMo"
 
 [dependency-groups]
 dev = [
@@ -26,3 +47,11 @@ pybromo = { workspace = true }
 members = [
     ".",
 ]
+
+[tool.setuptools.packages.find]
+include = ["pybromo*"]
+exclude = ["notebooks*"]
+
+[build-system]
+requires = ["setuptools","versioneer"]
+build-backend = "setuptools.build_meta"

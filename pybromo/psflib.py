@@ -12,7 +12,7 @@ File part of PyBroMo: a single molecule diffusion simulator.
 Copyright (C) 2013-2014 Antonino Ingargiola tritemio@gmail.com
 """
 
-import pkg_resources
+from importlib import resources
 import os
 from scipy.io import loadmat
 import scipy.interpolate as SI
@@ -132,10 +132,10 @@ class NumericPSF:
         else:
             self.fname = fname
             if dir_ is None:
-                dir_ = pkg_resources.resource_filename('pybromo', 'psf_data')
+                dir_ = resources.files('pybromo').joinpath('psf_data')
             self.dir_ = dir_
             self.x_step, self.z_step = x_step, z_step
-            self.psflab_psf_raw = load_PSFLab_file('/'.join([dir_, fname]))
+            self.psflab_psf_raw = load_PSFLab_file(self.dir_.joinpath(fname))
 
         xi, zi, hdata, zm = convert_PSFLab_xz(self.psflab_psf_raw,
                                               x_step=x_step, z_step=z_step,

@@ -643,7 +643,9 @@ class ParticlesSimulation(object):
         # Update start_pos for the next chunk
         start_pos[:] = pos[:, :, -1:]
 
-        return (np.split(POS, num_particles) if save_pos else []), em
+        # Return POS directly to avoid unnecessary np.split and np.vstack calls
+        # in the calling function.
+        return (POS if save_pos else None), em
 
     def simulate_diffusion(self, save_pos=False, total_emission=True,
                            radial=False, rs=None, seed=1, path='./',
@@ -707,7 +709,7 @@ class ParticlesSimulation(object):
             # otherwise is a 2-D array (self.num_particles, c_size)
             em_store.append(em)
             if save_pos:
-                self.position.append(np.vstack(POS).astype('float32'))
+                self.position.append(POS.astype('float32'))
             i_chunk += 1
             self.store.h5file.flush()
 

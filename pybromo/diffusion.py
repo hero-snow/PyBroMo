@@ -93,16 +93,24 @@ class Particle(object):
 
 
 class Particles(object):
-    """A list of Particle() objects and a few attributes."""
+    """
+    An efficient container for particles using NumPy arrays (struct of arrays).
 
+    This class stores particle properties (diffusion coefficients and initial
+    positions) in NumPy arrays rather than a list of `Particle` objects. This
+    "struct of arrays" approach significantly reduces object creation overhead
+    and allows for faster, vectorized operations, especially beneficial for
+    simulations with a large number of particles.
+    """
     @staticmethod
     def _generate(num_particles, D, box, rs):
-        """Generate a list of `Particle` objects."""
-        X0 = rs.rand(num_particles) * (box.x2 - box.x1) + box.x1
-        Y0 = rs.rand(num_particles) * (box.y2 - box.y1) + box.y1
-        Z0 = rs.rand(num_particles) * (box.z2 - box.z1) + box.z1
-        return [Particle(D=D, x0=x0, y0=y0, z0=z0)
-                for x0, y0, z0 in zip(X0, Y0, Z0)]
+        """Generate particle data as NumPy arrays."""
+        positions = np.empty((num_particles, 3), dtype=np.float64)
+        positions[:, 0] = rs.rand(num_particles) * (box.x2 - box.x1) + box.x1
+        positions[:, 1] = rs.rand(num_particles) * (box.y2 - box.y1) + box.y1
+        positions[:, 2] = rs.rand(num_particles) * (box.z2 - box.z1) + box.z1
+        D_array = np.full(num_particles, D, dtype=np.float64)
+        return D_array, positions
 
     @staticmethod
     def from_specs(num_particles, D, box, rs=None, seed=1):
@@ -126,8 +134,8 @@ class Particles(object):
         msg = 'ERROR: `num_particles` and `D` must have the same length.'
         assert len(num_particles) == len(D), msg
         P = Particles(num_particles[0], D[0], box, rs=rs, seed=seed)
-        for num_particle, D in zip(num_particles[1:], D[1:]):
-            P.add(num_particles=num_particle, D=D)
+        for num_particle, D_val in zip(num_particles[1:], D[1:]):
+            P.add(num_particles=num_particle, D=D_val)
         return P
 
     @staticmethod
@@ -163,9 +171,16 @@ class Particles(object):
         self.init_random_state = rs.get_state()
         self.box = box
         if particles is None:
-            self._plist = self._generate(num_particles, D, box, rs)
+            # Generate directly into NumPy arrays
+            self._D, self._positions = self._generate(num_particles, D, box, rs)
         else:
-            self._plist = list(particles)
+            # Initialize from a list of Particle objects
+            num_particles = len(particles)
+            self._D = np.empty(num_particles, dtype=np.float64)
+            self._positions = np.empty((num_particles, 3), dtype=np.float64)
+            for i, p in enumerate(particles):
+                self._D[i] = p.D
+                self._positions[i] = p.r0
         self.rs_hash = hashfunc(self.init_random_state)[:3]
 
     def add(self, num_particles, D):
@@ -175,10 +190,14 @@ class Particles(object):
             msg = ('A population with this diffusion coefficient is already '
                    'present. Change diffusion coefficient to add a new population.')
             raise ValueError(msg)
-        self._plist += self._generate(num_particles, D, box=self.box, rs=self.rs)
+        new_D, new_positions = self._generate(
+            num_particles, D, box=self.box, rs=self.rs)
+        self._D = np.concatenate((self._D, new_D))
+        self._positions = np.concatenate((self._positions, new_positions))
 
     def to_list(self):
-        return self._plist.copy()
+        """Return a list of `Particle` objects (slower, for compatibility)."""
+        return [self[i] for i in range(len(self))]
 
     def to_json(self):
         return json.dumps({'particles': [v.to_dict() for v in self]})
@@ -190,28 +209,37 @@ class Particles(object):
         return cls(particles=particles, num_particles=None, D=None, box=None)
 
     def __iter__(self):
-        return iter(self._plist)
+        """Iterator to yield `Particle` objects on-the-fly."""
+        for i in range(len(self)):
+            yield self[i]
 
     def __len__(self):
-        return len(self._plist)
+        return len(self._D)
 
     def __getitem__(self, i):
-        return self._plist[i]
+        """Return a `Particle` object on-the-fly for a given index."""
+        pos = self._positions[i]
+        return Particle(D=self._D[i], x0=pos[0], y0=pos[1], z0=pos[2])
 
     def __eq__(self, other_particles):
         if len(self) != len(other_particles):
             return False
+        # If the other object is also a vectorized Particles object, compare arrays
+        if isinstance(other_particles, Particles):
+            return (np.all(self._D == other_particles._D) and
+                    np.allclose(self._positions, other_particles._positions))
+        # Fallback for comparing with list-based or other iterables
         equal = np.array([p1 == p2 for p1, p2 in zip(self, other_particles)])
         return equal.all()
 
     @property
     def positions(self):
         """Initial position for each particle. Shape (N, 3, 1)."""
-        return np.vstack([p.r0 for p in self]).reshape(len(self), 3, 1)
+        return self._positions.reshape(len(self), 3, 1)
 
     @property
     def diffusion_coeff(self):
-        return np.array([par.D for par in self])
+        return self._D
 
     @property
     def num_populations(self):

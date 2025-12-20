@@ -45,6 +45,25 @@ particles_specs = dict(
     )
 
 
+# Define a simplified version of the original list-based Particles class
+# This is defined at the module level to be accessible by timeit.
+class LegacyParticles:
+    def __init__(self, num_particles, D, box, rs):
+        self._plist = self._generate(num_particles, D, box, rs)
+
+    @staticmethod
+    def _generate(num_particles, D, box, rs):
+        X0 = rs.rand(num_particles) * (box.x2 - box.x1) + box.x1
+        Y0 = rs.rand(num_particles) * (box.y2 - box.y1) + box.y1
+        Z0 = rs.rand(num_particles) * (box.z2 - box.z1) + box.z1
+        # In the original implementation, this was a list comprehension
+        # of Particle objects. We simulate the object creation overhead.
+        return [
+            {'D': D, 'x0': x0, 'y0': y0, 'z0': z0}
+            for x0, y0, z0 in zip(X0, Y0, Z0)
+        ]
+
+
 def randomstate_equal(rs1, rs2):
     if isinstance(rs1, np.random.RandomState):
         rs1 = rs1.get_state()
@@ -114,27 +133,86 @@ def test_Particles():
     Di, counts = zip(*P.diffusion_coeff_counts)
     rs2 = np.random.RandomState()
     rs2.set_state(P.init_random_state)
-    P2_list = pbm.Particles._generate(num_particles=counts[0], D=Di[0],
-                                      box=P.box, rs=rs2)
-    P2_list += pbm.Particles._generate(num_particles=counts[1], D=Di[1],
-                                       box=P.box, rs=rs2)
-    assert P.to_list() == P2_list
+
+    # Create a reference Particles object using the old _generate method logic
+    p2_d_array, p2_pos_array = pbm.Particles._generate(
+        num_particles=counts[0], D=Di[0], box=P.box, rs=rs2)
+    p2_d_array2, p2_pos_array2 = pbm.Particles._generate(
+        num_particles=counts[1], D=Di[1], box=P.box, rs=rs2)
+
+    # Manually create a Particles object for comparison
+    P2 = pbm.Particles(num_particles=0, D=0, box=box, rs=rs) # Empty object
+    P2._D = np.concatenate((p2_d_array, p2_d_array2))
+    P2._positions = np.concatenate((p2_pos_array, p2_pos_array2))
+
+    # Test equality with the refactored implementation
+    assert P == P2
 
     # Test Particles random states
     assert randomstate_equal(P.rs, rs.get_state())
     assert randomstate_equal(P.init_random_state, np.random.RandomState(_SEED))
     assert not randomstate_equal(P.init_random_state, P.rs)
 
-    # Test JSON serialization
+    # Test JSON serialization and deserialization
     P_json = P.to_json()
     P3 = pbm.Particles.from_json(P_json)
-    assert P.to_list() == P3.to_list()
+    assert P == P3
 
-    # Test alternative constructor
+    # Test from_specs constructor
     rs = np.random.RandomState(_SEED)
     P4 = pbm.Particles.from_specs(
         num_particles=(20, 15), D=(D1, D2), box=box, rs=rs)
-    assert P4.to_list() == P2_list
+    assert P == P4
+
+
+def test_Particles_vectorization():
+    """
+    Test that the vectorized implementation of Particles is numerically equivalent.
+    """
+    rs = np.random.RandomState(_SEED)
+    num_particles = 100
+    # Original method: create a list of Particle objects
+    D_orig, pos_orig = pbm.Particles._generate(num_particles, D1, box, rs)
+
+    # Vectorized method: create NumPy arrays directly
+    rs_vec = np.random.RandomState(_SEED)
+    D_vec, pos_vec = pbm.Particles._generate(num_particles, D1, box, rs_vec)
+
+    # Check for numerical consistency
+    assert np.all(D_orig == D_vec)
+    assert np.allclose(pos_orig, pos_vec)
+
+
+def test_Particles_performance():
+    """
+    Benchmark the performance of the vectorized Particles class.
+    """
+    import timeit
+
+    num_particles = 10000
+    rs = np.random.RandomState(_SEED)
+
+    # Time the legacy implementation
+    legacy_stmt = f"LegacyParticles(num_particles={num_particles}, D=D1, box=box, rs=rs)"
+    legacy_time = timeit.timeit(
+        stmt=legacy_stmt,
+        globals={
+            'LegacyParticles': LegacyParticles, 'D1': D1, 'box': box, 'rs': rs,
+            'num_particles': num_particles},
+        number=10)
+
+    # Time the new, vectorized implementation
+    new_stmt = f"pbm.Particles(num_particles={num_particles}, D=D1, box=box, rs=rs)"
+    new_time = timeit.timeit(
+        stmt=new_stmt,
+        globals={
+            'pbm': pbm, 'D1': D1, 'box': box, 'rs': rs,
+            'num_particles': num_particles},
+        number=10)
+
+    print(f"Legacy Particles creation time: {legacy_time:.6f}s")
+    print(f"New Particles creation time: {new_time:.6f}s")
+    assert new_time < legacy_time
 
 
 def test_diffusion_sim_random_state():

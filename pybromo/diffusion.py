@@ -652,9 +652,16 @@ class ParticlesSimulation(object):
                 pos[:, coord, :] = wrap_func(pos[:, coord, :], *self.box.b[coord])
 
         # Calculate emission rates
-        Ro = np.sqrt(pos[:, 0, :]**2 + pos[:, 1, :]**2)
         Z = pos[:, 2, :]
-        current_em = self.psf.eval_xz(Ro, Z)**2
+        # Optimization: When using a Gaussian PSF centered at xc=0, we can
+        # avoid a redundant sqrt operation by passing the squared radial
+        # distance directly.
+        if isinstance(self.psf, GaussianPSF) and self.psf.rc[0] == 0:
+            Ro_squared = pos[:, 0, :]**2 + pos[:, 1, :]**2
+            current_em = self.psf.eval_xz_sq_xc0(Ro_squared, Z)**2
+        else:
+            Ro = np.sqrt(pos[:, 0, :]**2 + pos[:, 1, :]**2)
+            current_em = self.psf.eval_xz(Ro, Z)**2
 
         if total_emission:
             em = np.sum(current_em, axis=0, dtype=np.float32)

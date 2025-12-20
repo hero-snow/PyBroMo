@@ -92,6 +92,17 @@ class GaussianPSF:
         sx, sy, sz = self.s
         return exp(-(((x-xc)**2)/(2*sx**2) + ((z-zc)**2)/(2*sz**2)))
 
+    def eval_xz_sq_xc0(self, x_squared, z):
+        """
+        Evaluate the function in (x_squared, z) for xc=0.
+
+        This is a performance optimization that avoids a sqrt followed by a
+        square. It is only valid when the PSF is centered at xc=0.
+        """
+        xc, yc, zc = self.rc
+        sx, sy, sz = self.s
+        return exp(-(x_squared / (2 * sx**2) + ((z - zc)**2) / (2 * sz**2)))
+
     def hash(self):
         """Return an hash string computed on the PSF data."""
         return hashlib.md5(repr(self).encode()).hexdigest()

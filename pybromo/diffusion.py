@@ -115,7 +115,14 @@ class Particles(object):
     @staticmethod
     def from_specs(num_particles, D, box, rs=None, seed=1):
         """
-        Create particles populations in a single-step.
+        Create particles populations in a single-step with improved performance.
+
+        This implementation has been optimized to avoid repeated memory
+        reallocations by pre-calculating the total number of particles and
+        allocating the NumPy arrays for diffusion coefficients and positions
+        in a single operation. This is significantly more efficient than the
+        previous approach, which incrementally grew the arrays using
+        `np.concatenate` inside a loop.
 
         Arguments:
             num_particles (sequence): contains the number of particles
@@ -129,13 +136,35 @@ class Particles(object):
             seed (uint): when `rs` is None, `seed` is used to initialize the
                 random state. `seed` is ignored when `rs` is not None.
         """
+        if rs is None:
+            rs = np.random.RandomState(seed=seed)
+
         msg = 'The sequence `num_particles` must have length >= 1.'
         assert len(num_particles) > 0, msg
         msg = 'ERROR: `num_particles` and `D` must have the same length.'
         assert len(num_particles) == len(D), msg
-        P = Particles(num_particles[0], D[0], box, rs=rs, seed=seed)
-        for num_particle, D_val in zip(num_particles[1:], D[1:]):
-            P.add(num_particles=num_particle, D=D_val)
+
+        # Pre-allocate arrays to avoid costly concatenations in a loop
+        total_particles = sum(num_particles)
+        D_array = np.empty(total_particles, dtype=np.float64)
+        positions_array = np.empty((total_particles, 3), dtype=np.float64)
+
+        start_idx = 0
+        for num, D_val in zip(num_particles, D):
+            end_idx = start_idx + num
+
+            # Directly generate and fill the slices of the arrays
+            D_array[start_idx:end_idx] = D_val
+            positions_array[start_idx:end_idx, 0] = rs.rand(num) * (box.x2 - box.x1) + box.x1
+            positions_array[start_idx:end_idx, 1] = rs.rand(num) * (box.y2 - box.y1) + box.y1
+            positions_array[start_idx:end_idx, 2] = rs.rand(num) * (box.z2 - box.z1) + box.z1
+
+            start_idx = end_idx
+
+        # Initialize the Particles object with the pre-filled arrays
+        P = Particles(0, 0, box, rs=rs, seed=seed) # Create an empty shell
+        P._D = D_array
+        P._positions = positions_array
         return P
 
     @staticmethod

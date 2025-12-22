@@ -117,6 +117,10 @@ class Particles(object):
         """
         Create particles populations in a single-step.
 
+        This method is optimized for performance by pre-allocating the full
+        NumPy arrays for all particle populations and then filling them,
+        avoiding the costly use of `np.concatenate` in a loop.
+
         Arguments:
             num_particles (sequence): contains the number of particles
                 in each population
@@ -133,9 +137,30 @@ class Particles(object):
         assert len(num_particles) > 0, msg
         msg = 'ERROR: `num_particles` and `D` must have the same length.'
         assert len(num_particles) == len(D), msg
-        P = Particles(num_particles[0], D[0], box, rs=rs, seed=seed)
-        for num_particle, D_val in zip(num_particles[1:], D[1:]):
-            P.add(num_particles=num_particle, D=D_val)
+
+        if rs is None:
+            rs = np.random.RandomState(seed=seed)
+
+        total_particles = sum(num_particles)
+
+        # Create an empty Particles object that will be filled.
+        # We pass num_particles=0 to prevent initial allocation, then
+        # overwrite _D and _positions with pre-allocated arrays.
+        P = Particles(0, 0, box, rs=rs)
+
+        # Pre-allocate arrays for all particles to avoid using np.concatenate
+        P._D = np.empty(total_particles, dtype=np.float64)
+        P._positions = np.empty((total_particles, 3), dtype=np.float64)
+
+        # Fill the arrays population by population
+        start_idx = 0
+        for num, D_val in zip(num_particles, D):
+            end_idx = start_idx + num
+            new_D, new_positions = Particles._generate(num, D_val, box, rs)
+            P._D[start_idx:end_idx] = new_D
+            P._positions[start_idx:end_idx] = new_positions
+            start_idx = end_idx
+
         return P
 
     @staticmethod

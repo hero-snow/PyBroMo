@@ -165,6 +165,86 @@ def test_Particles():
     assert P == P4
 
 
+def test_Particles_from_specs_vectorized():
+    """
+    Test that the vectorized implementation of `Particles.from_specs`
+    is numerically consistent with the original implementation.
+    """
+    # Original, non-vectorized implementation for comparison
+    def original_from_specs(num_particles, D, box, rs=None, seed=1):
+        msg = 'The sequence `num_particles` must have length >= 1.'
+        assert len(num_particles) > 0, msg
+        msg = 'ERROR: `num_particles` and `D` must have the same length.'
+        assert len(num_particles) == len(D), msg
+        P = pbm.Particles(num_particles[0], D[0], box, rs=rs, seed=seed)
+        for num_particle, D_val in zip(num_particles[1:], D[1:]):
+            P.add(num_particles=num_particle, D=D_val)
+        return P
+
+    # Generate sample data
+    rs_orig = np.random.RandomState(_SEED)
+    P_orig = original_from_specs(
+        num_particles=(20, 15, 10), D=(D1, D2, D1/3), box=box, rs=rs_orig)
+
+    # Run with vectorized implementation
+    rs_vec = np.random.RandomState(_SEED)
+    P_vec = pbm.Particles.from_specs(
+        num_particles=(20, 15, 10), D=(D1, D2, D1/3), box=box, rs=rs_vec)
+
+    # Assert that the results are identical
+    assert P_orig == P_vec
+
+
+def test_Particles_from_specs_performance():
+    """
+    Benchmark the performance of the vectorized `Particles.from_specs`.
+    """
+    import timeit
+
+    # Original, non-vectorized implementation for comparison
+    def original_from_specs(num_particles, D, box, rs=None, seed=1):
+        msg = 'The sequence `num_particles` must have length >= 1.'
+        assert len(num_particles) > 0, msg
+        msg = 'ERROR: `num_particles` and `D` must have the same length.'
+        assert len(num_particles) == len(D), msg
+        P = pbm.Particles(num_particles[0], D[0], box, rs=rs, seed=seed)
+        for num_particle, D_val in zip(num_particles[1:], D[1:]):
+            P.add(num_particles=num_particle, D=D_val)
+        return P
+
+    # Setup for the benchmark
+    rs = np.random.RandomState(_SEED)
+    num_particles = [1000] * 10
+    D_values = [D1 * (i + 1) for i in range(10)]
+
+    # Time the legacy implementation
+    legacy_stmt = "original_from_specs(num_particles, D_values, box, rs)"
+    legacy_time = timeit.timeit(
+        stmt=legacy_stmt,
+        globals={
+            'original_from_specs': original_from_specs,
+            'num_particles': num_particles, 'D_values': D_values,
+            'box': box, 'rs': rs
+        },
+        number=10
+    )
+
+    # Time the new, vectorized implementation
+    new_stmt = "pbm.Particles.from_specs(num_particles, D_values, box, rs)"
+    new_time = timeit.timeit(
+        stmt=new_stmt,
+        globals={
+            'pbm': pbm, 'num_particles': num_particles,
+            'D_values': D_values, 'box': box, 'rs': rs
+        },
+        number=10
+    )
+
+    print(f"Legacy Particles.from_specs time: {legacy_time:.6f}s")
+    print(f"New Particles.from_specs time: {new_time:.6f}s")
+    assert new_time < legacy_time
+
+
 def test_Particles_vectorization():
     """
     Test that the vectorized implementation of Particles is numerically equivalent.

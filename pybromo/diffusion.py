@@ -1399,37 +1399,18 @@ def sim_counts_timetrace_with_bg(emission, max_rate, bg_rate, t_step, rs=None):
     """
     if rs is None:
         rs = np.random.RandomState()
-    em = np.atleast_2d(emission).astype('float64', copy=False)
-    counts_nrows = em.shape[0]
+
+    # Optimization: Pre-allocate a single array for all emission rates and
+    # call the random number generator only once. This is more efficient
+    # than making two separate calls for particles and background. It also
+    # avoids modifying the input 'emission' array in-place.
+    emission_rates = np.zeros((emission.shape[0] + (1 if bg_rate is not None else 0),
+                               emission.shape[1]), dtype='float64')
+    emission_rates[:emission.shape[0]] = emission * max_rate * t_step
     if bg_rate is not None:
-        counts_nrows += 1   # add a row for poisson background
-    counts = np.zeros((counts_nrows, em.shape[1]), dtype='u1')
-    # In-place computation
-    # NOTE: the caller will see the modification
-    em *= (max_rate * t_step)
-    # Use automatic type conversion int64 (counts_par) -> uint8 (counts)
-    counts_par = rs.poisson(lam=em)
-    if bg_rate is None:
-        counts[:] = counts_par
-    else:
-        counts[:-1] = counts_par
-        counts[-1] = rs.poisson(lam=bg_rate * t_step, size=em.shape[1])
-    return counts
+        emission_rates[-1] = bg_rate * t_step
+
+    # Generate counts from the combined rates array in a single pass.
+    return rs.poisson(lam=emission_rates).astype('uint8')
 
 
-def sim_timetrace_bg2(emission, max_rate, bg_rate, t_step, rs=None):
-    """Draw random emitted photons from r.v. ~ Poisson(emission_rates).
-
-    This is an alternative implementation of :func:`sim_timetrace_bg`.
-    """
-    if rs is None:
-        rs = np.random.RandomState()
-    emiss_bin_rate = np.zeros((emission.shape[0] + 1, emission.shape[1]),
-                              dtype='float64')
-    emiss_bin_rate[:-1] = emission * max_rate * t_step
-    if bg_rate is not None:
-        emiss_bin_rate[-1] = bg_rate * t_step
-        counts = rs.poisson(lam=emiss_bin_rate).astype('uint8')
-    else:
-        counts = rs.poisson(lam=emiss_bin_rate[:-1]).astype('uint8')
-    return counts

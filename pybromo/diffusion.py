@@ -685,11 +685,11 @@ class ParticlesSimulation(object):
         # Optimization: When using a Gaussian PSF centered at xc=0, we can
         # avoid a redundant sqrt operation by passing the squared radial
         # distance directly.
+        Ro_squared = pos[:, 0, :]**2 + pos[:, 1, :]**2
         if isinstance(self.psf, GaussianPSF) and self.psf.rc[0] == 0:
-            Ro_squared = pos[:, 0, :]**2 + pos[:, 1, :]**2
             current_em = self.psf.eval_xz_sq_xc0(Ro_squared, Z)**2
         else:
-            Ro = np.sqrt(pos[:, 0, :]**2 + pos[:, 1, :]**2)
+            Ro = np.sqrt(Ro_squared)
             current_em = self.psf.eval_xz(Ro, Z)**2
 
         if total_emission:
@@ -699,6 +699,9 @@ class ParticlesSimulation(object):
 
         if save_pos:
             if radial:
+                # Ro may not be defined if the GaussianPSF path was taken
+                if 'Ro' not in locals():
+                    Ro = np.sqrt(Ro_squared)
                 POS[:, 0, :] = Ro
                 POS[:, 1, :] = Z
             else:

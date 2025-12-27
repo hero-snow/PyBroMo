@@ -1367,69 +1367,48 @@ class ParticlesSimulation(object):
         print('\n- End trajectories simulation - %s' % ctime(), flush=True)
 
 
-def sim_timetrace(emission, max_rate, t_step):
-    """Draw random emitted photons from Poisson(emission_rates).
-    """
-    emission_rates = emission * max_rate * t_step
-    return np.random.poisson(lam=emission_rates).astype(np.uint8)
-
-
 def sim_counts_timetrace_with_bg(emission, max_rate, bg_rate, t_step, rs=None):
-    """Draw random emitted photons from r.v. ~ Poisson(emission_rates).
+    """
+    Draw random emitted photons from a Poisson distribution.
 
-    Generate an array of counts on a binned time axis
-    for one or more particles. Optionally, adds a trace for background counts.
+    This function generates an array of photon counts for one or more particles
+    based on their emission rates, and can optionally include background counts.
+    It has been optimized to perform a single, vectorized call to the Poisson
+    random number generator for both particle and background emissions, which
+    significantly improves performance by reducing Python overhead.
 
     Arguments:
-        emission (2D array): array of normalized emission rates. One row per
-            particle (axis = 0). Columns are the different time steps.
-        max_rate (float): the peak emission rate in Hz.
-        bg_rate (float or None): rate of a constant Poisson background (Hz).
-            Background is added as an additional row in the returned array
-            of counts. If None, no background simulated.
-        t_step (float): duration of a time step in seconds.
-        rs (RandomState or None): object used to draw the random numbers.
-            If None, a new RandomState is created using a random seed.
+        emission (2D array): Array of normalized emission rates, with one row
+            per particle and columns representing time steps.
+        max_rate (float): The peak emission rate in Hz.
+        bg_rate (float or None): The rate of a constant Poisson background in Hz.
+            If provided, background counts are added as an additional row in the
+            output array. If None, no background is simulated.
+        t_step (float): The duration of a time step in seconds.
+        rs (np.random.RandomState or None): The random number generator to use.
+            If None, a new RandomState is created.
 
     Returns:
-        `counts` an 2D uint8 array of counts in each time bin, for each
-        particle. If `bg_rate` is None, then `counts.shape == emission.shape`.
-        Otherwise, `counts` has one row more than `emission` for storing
-        the background counts.
+        A 2D uint8 array of photon counts. If `bg_rate` is specified, the
+        array will have one more row than the input `emission` array.
     """
     if rs is None:
         rs = np.random.RandomState()
-    em = np.atleast_2d(emission).astype('float64', copy=False)
-    counts_nrows = em.shape[0]
+
+    emission = np.atleast_2d(emission)
+    num_particles, num_bins = emission.shape
+    # Determine the shape of the rates array, adding a row for background if needed
+    num_rows = num_particles + 1 if bg_rate is not None else num_particles
+
+    # Pre-allocate the array for emission rates to avoid modifying the input
+    emission_rates = np.zeros((num_rows, num_bins), dtype=np.float64)
+
+    # Calculate particle emission rates
+    emission_rates[:num_particles] = emission * (max_rate * t_step)
+
+    # Add background rate if specified
     if bg_rate is not None:
-        counts_nrows += 1   # add a row for poisson background
-    counts = np.zeros((counts_nrows, em.shape[1]), dtype='u1')
-    # In-place computation
-    # NOTE: the caller will see the modification
-    em *= (max_rate * t_step)
-    # Use automatic type conversion int64 (counts_par) -> uint8 (counts)
-    counts_par = rs.poisson(lam=em)
-    if bg_rate is None:
-        counts[:] = counts_par
-    else:
-        counts[:-1] = counts_par
-        counts[-1] = rs.poisson(lam=bg_rate * t_step, size=em.shape[1])
-    return counts
+        emission_rates[-1] = bg_rate * t_step
 
-
-def sim_timetrace_bg2(emission, max_rate, bg_rate, t_step, rs=None):
-    """Draw random emitted photons from r.v. ~ Poisson(emission_rates).
-
-    This is an alternative implementation of :func:`sim_timetrace_bg`.
-    """
-    if rs is None:
-        rs = np.random.RandomState()
-    emiss_bin_rate = np.zeros((emission.shape[0] + 1, emission.shape[1]),
-                              dtype='float64')
-    emiss_bin_rate[:-1] = emission * max_rate * t_step
-    if bg_rate is not None:
-        emiss_bin_rate[-1] = bg_rate * t_step
-        counts = rs.poisson(lam=emiss_bin_rate).astype('uint8')
-    else:
-        counts = rs.poisson(lam=emiss_bin_rate[:-1]).astype('uint8')
-    return counts
+    # A single call to the Poisson generator is more efficient than multiple calls.
+    return rs.poisson(lam=emission_rates).astype(np.uint8)

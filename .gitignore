@@ -8,3 +8,4 @@ build
 pybromo.egg-info
 dist/
 .vscode/
+*.h5

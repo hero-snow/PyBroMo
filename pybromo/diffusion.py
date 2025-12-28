@@ -1383,6 +1383,15 @@ def sim_counts_timetrace_with_bg(emission, max_rate, bg_rate, t_step, rs=None):
     Generate an array of counts on a binned time axis
     for one or more particles. Optionally, adds a trace for background counts.
 
+    This function is performance-optimized. It combines particle and background
+    emission rates into a single NumPy array and uses a single vectorized call
+    to `rs.poisson`. This approach is significantly faster than making separate
+    calls for particles and background, as it minimizes the overhead of
+    Python-to-NumPy function calls.
+
+    NOTE: This function modifies the input `emission` array in-place for
+    backward compatibility with the original implementation.
+
     Arguments:
         emission (2D array): array of normalized emission rates. One row per
             particle (axis = 0). Columns are the different time steps.
@@ -1402,37 +1411,24 @@ def sim_counts_timetrace_with_bg(emission, max_rate, bg_rate, t_step, rs=None):
     """
     if rs is None:
         rs = np.random.RandomState()
-    em = np.atleast_2d(emission).astype('float64', copy=False)
-    counts_nrows = em.shape[0]
-    if bg_rate is not None:
-        counts_nrows += 1   # add a row for poisson background
-    counts = np.zeros((counts_nrows, em.shape[1]), dtype='u1')
-    # In-place computation
-    # NOTE: the caller will see the modification
+
+    # Ensure emission is a float64 numpy array, avoiding a copy if possible.
+    # This is crucial for the in-place modification to work as expected.
+    em = np.atleast_2d(emission).astype(np.float64, copy=False)
+    num_particles, num_steps = em.shape
+
+    # Perform in-place multiplication to modify the original array,
+    # preserving the side-effect contract.
     em *= (max_rate * t_step)
-    # Use automatic type conversion int64 (counts_par) -> uint8 (counts)
-    counts_par = rs.poisson(lam=em)
-    if bg_rate is None:
-        counts[:] = counts_par
-    else:
-        counts[:-1] = counts_par
-        counts[-1] = rs.poisson(lam=bg_rate * t_step, size=em.shape[1])
-    return counts
 
-
-def sim_timetrace_bg2(emission, max_rate, bg_rate, t_step, rs=None):
-    """Draw random emitted photons from r.v. ~ Poisson(emission_rates).
-
-    This is an alternative implementation of :func:`sim_timetrace_bg`.
-    """
-    if rs is None:
-        rs = np.random.RandomState()
-    emiss_bin_rate = np.zeros((emission.shape[0] + 1, emission.shape[1]),
-                              dtype='float64')
-    emiss_bin_rate[:-1] = emission * max_rate * t_step
     if bg_rate is not None:
-        emiss_bin_rate[-1] = bg_rate * t_step
-        counts = rs.poisson(lam=emiss_bin_rate).astype('uint8')
+        # If background is present, create a larger array and combine
+        # the particle rates with the background rate for a single poisson call.
+        rates = np.empty((num_particles + 1, num_steps), dtype=np.float64)
+        rates[:-1] = em
+        rates[-1] = bg_rate * t_step
     else:
-        counts = rs.poisson(lam=emiss_bin_rate[:-1]).astype('uint8')
-    return counts
+        # If no background, the rates are just the modified emission values.
+        rates = em
+
+    return rs.poisson(lam=rates).astype(np.uint8)

@@ -549,3 +549,34 @@ def test_timestamps_from_counts_vectorized():
     assert np.array_equal(ts_orig, ts_vec)
     assert np.array_equal(p_orig, p_vec)
     assert np.allclose(pos_orig, pos_vec, equal_nan=True)
+
+def test_AlexSmFretSimulation():
+    from pybromo.diffusion import ParticlesSimulation, Particles, Box, GaussianPSF
+    from pybromo.timestamps import AlexSmFretSimulation
+    import numpy as np
+    import os
+
+    t_step, t_max = 1e-6, 0.01
+    box = Box(-1e-6, 1e-6, -1e-6, 1e-6, -1e-6, 1e-6)
+    psf = GaussianPSF()
+    particles = Particles(num_particles=2, D=1e-11, box=box)
+    S = ParticlesSimulation(t_step=t_step, t_max=t_max, particles=particles,
+                            box=box, psf=psf)
+    S.simulate_diffusion()
+
+    em_rates, E_values, num_particles = [10e3], [0.5], [2]
+    alex_sim = AlexSmFretSimulation(
+        S, em_rates, E_values, num_particles,
+        bg_rate_d=100, bg_rate_a=100,
+        alex_period=1e-3, d_duty=0.4, a_duty=0.4
+    )
+    rs = np.random.RandomState(42)
+    alex_sim.run(rs)
+    alex_sim.save_photon_hdf5()
+
+    assert os.path.exists(alex_sim.filepath)
+    os.remove(alex_sim.filepath)
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+    os.remove(S.store.filepath)
+    os.remove(S.ts_store.filepath)

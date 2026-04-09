@@ -881,7 +881,7 @@ class ParticlesSimulation(object):
             spatial_dims = position.shape[1]
             assert pos_part <= counts.shape[0] <= pos_part + 1
 
-        if counts.max() == 0:
+        if counts.size == 0 or counts.max() == 0:
             empty_pos = None
             if position is not None:
                 empty_pos = np.empty(shape=(0, spatial_dims), dtype=np.float32)
@@ -1043,7 +1043,10 @@ class ParticlesSimulation(object):
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
-            t_chunksize = self.emission.chunkshape[1]
+            if hasattr(self, 'emission') and hasattr(self.emission, 'chunkshape'):
+                t_chunksize = self.emission.chunkshape[1]
+            else:
+                t_chunksize = 2**19
         timeslice_size = self.n_samples
         if timeslice is not None:
             timeslice_size = timeslice // self.t_step
@@ -1163,7 +1166,10 @@ class ParticlesSimulation(object):
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
-            t_chunksize = self.emission.chunkshape[1]
+            if hasattr(self, 'emission') and hasattr(self.emission, 'chunkshape'):
+                t_chunksize = self.emission.chunkshape[1]
+            else:
+                t_chunksize = 2**19
         timeslice_size = self.n_samples
         if timeslice is not None:
             timeslice_size = timeslice // self.t_step
@@ -1370,6 +1376,213 @@ class ParticlesSimulation(object):
         print('\n- End trajectories simulation - %s' % ctime(), flush=True)
 
 
+
+    def simulate_timestamps_alex(self, populations,
+                                 max_rates_d_laser, max_rates_a_laser,
+                                 E_values, leakage, direct_exc,
+                                 bg_rate_d, bg_rate_a,
+                                 alex_period, d_duty, a_duty,
+                                 rs=None, seed=1, chunksize=2**16,
+                                 comp_filter=None, overwrite=False,
+                                 skip_existing=False, scale=10,
+                                 path=None, t_chunksize=2**19,
+                                 timeslice=None, save_pos=False):
+        """Compute D and A timestamps for ALEX simulation.
+
+        Arguments:
+            populations (list of slices): slices to `self.particles`.
+            max_rates_d_laser (list): peak emission rates for D-laser.
+            max_rates_a_laser (list): peak emission rates for A-laser.
+            E_values (list): FRET efficiency for each population.
+            leakage (float): fraction of D emission in A channel.
+            direct_exc (float): fraction of A excitation by D-laser.
+            bg_rate_d (float): background rate for D detector (cps).
+            bg_rate_a (float): background rate for A detector (cps).
+            alex_period (float): ALEX period in seconds.
+            d_duty (float): D-laser duty cycle (0 to 1).
+            a_duty (float): A-laser duty cycle (0 to 1).
+            rs (RandomState): random state object.
+            seed (int): seed for RandomState if rs is None.
+            chunksize (int): chunk size for on-disk arrays.
+            scale (int): factor to convert simulation time to timestamps.
+            timeslice (float): duration of simulation in seconds.
+            save_pos (bool): whether to save particle positions.
+        """
+        self.open_store_timestamp(path=path)
+        rs = self._get_group_randomstate(rs, seed, self.ts_group)
+        if t_chunksize is None:
+            if hasattr(self, 'emission') and hasattr(self.emission, 'chunkshape'):
+                t_chunksize = self.emission.chunkshape[1]
+            else:
+                t_chunksize = 2**19
+        timeslice_size = self.n_samples
+        if timeslice is not None:
+            timeslice_size = int(timeslice // self.t_step)
+
+        # Generate a unique name for this ALEX simulation
+        params_hash = hashlib.sha1(str((
+            max_rates_d_laser, max_rates_a_laser, E_values, leakage, direct_exc,
+            bg_rate_d, bg_rate_a, alex_period, d_duty, a_duty, scale
+        )).encode()).hexdigest()[:8]
+        name_d = 'alex_d_%s' % params_hash
+        name_a = 'alex_a_%s' % params_hash
+
+        if chunksize is None:
+            chunksize = 2**16
+        kw = dict(clk_p=self.t_step / scale,
+                  populations=populations,
+                  num_particles=self.num_particles,
+                  bg_particle=self.num_particles,
+                  overwrite=overwrite, chunksize=chunksize,
+                  save_pos=save_pos)
+        if save_pos:
+            kw.update(spatial_dims=self.position.shape[1])
+        if comp_filter is not None:
+            kw.update(comp_filter=comp_filter)
+
+        kw.update(name=name_d, max_rates=max_rates_d_laser, bg_rate=bg_rate_d)
+        try:
+            self._timestamps_d, self._tparticles_d, self._tpositions_d = (
+                self.ts_store.add_timestamps(**kw))
+        except ExistingArrayError as e:
+            if skip_existing:
+                print(' - Skipping, ALEX D timestamps already present.')
+            else:
+                raise e
+
+        kw.update(name=name_a, max_rates=max_rates_a_laser, bg_rate=bg_rate_a)
+        try:
+            self._timestamps_a, self._tparticles_a, self._tpositions_a = (
+                self.ts_store.add_timestamps(**kw))
+        except ExistingArrayError as e:
+            if skip_existing:
+                print(' - Skipping, ALEX A timestamps already present.')
+            else:
+                raise e
+
+        self.ts_group._v_attrs['init_random_state'] = rs.get_state()
+        self.ts_group._v_attrs['ALEX'] = 1
+        self._timestamps_d.attrs['init_random_state'] = rs.get_state()
+        self._timestamps_d.attrs['PyBroMo'] = __version__
+        self._timestamps_a.attrs['PyBroMo'] = __version__
+
+        print('- Start ALEX trajectories simulation - %s' % ctime(), flush=True)
+
+        prev_time = 0
+        for i_start, i_end in iter_chunk_index(timeslice_size, t_chunksize):
+            curr_time = np.around(i_start * self.t_step, decimals=1)
+            if curr_time > prev_time:
+                print(' %.1fs' % curr_time, end='', flush=True)
+                prev_time = curr_time
+
+            em_chunk = self.emission[:, i_start:i_end]
+            pos_chunk = self.position[:, :, i_start:i_end] if save_pos else None
+
+            ts_d, par_d, pos_d, ts_a, par_a, pos_a = \
+                self._sim_timestamps_alex_populations(
+                    em_chunk, populations, max_rates_d_laser, max_rates_a_laser,
+                    E_values, leakage, direct_exc, bg_rate_d, bg_rate_a,
+                    alex_period, d_duty, a_duty, i_start, rs, scale=scale,
+                    position=pos_chunk)
+
+            self._timestamps_d.append(ts_d)
+            self._tparticles_d.append(par_d)
+            self._timestamps_a.append(ts_a)
+            self._tparticles_a.append(par_a)
+            if save_pos:
+                self._tpositions_d.append(pos_d)
+                self._tpositions_a.append(pos_a)
+
+        self.ts_group._v_attrs['last_random_state'] = rs.get_state()
+        self.ts_store.h5file.flush()
+        print('\n- End ALEX trajectories simulation - %s' % ctime(), flush=True)
+
+    def _sim_timestamps_alex_populations(self, emission, populations,
+                                         max_rates_d_laser, max_rates_a_laser,
+                                         E_values, leakage, direct_exc,
+                                         bg_rate_d, bg_rate_a,
+                                         alex_period, d_duty, a_duty,
+                                         i_start, rs, scale=10, position=None):
+        save_pos = position is not None
+        n_steps = emission.shape[1]
+        times_sim = (i_start + np.arange(n_steps)) * self.t_step
+        phase = (times_sim % alex_period)
+        d_on = phase < (alex_period * d_duty)
+        # A-laser starts at phase 0.5
+        a_start = alex_period * 0.5
+        a_on = (phase >= a_start) & (phase < (a_start + alex_period * a_duty))
+
+        ts_times = (i_start + np.arange(n_steps, dtype='int64')) * scale
+
+        ts_d_list, par_d_list, pos_d_list = [], [], []
+        ts_a_list, par_a_list, pos_a_list = [], [], []
+
+        for ipop, (pop, max_d, max_a, E) in enumerate(zip(
+                populations, max_rates_d_laser, max_rates_a_laser, E_values)):
+
+            is_last = (ipop == len(populations) - 1)
+            bg_d = bg_rate_d if is_last else None
+            bg_a = bg_rate_a if is_last else None
+
+            em_pop = emission[pop]
+
+            # Effective emission rates for D detector
+            # R_D = d_on * (1-E) * max_d
+            eff_em_d = d_on * (1.0 - E) * max_d * em_pop
+
+            # Effective emission rates for A detector
+            # R_A = (d_on * (E*max_d + L*(1-E)*max_d + dir_exc*max_a) + a_on * max_a)
+            eff_em_a = (d_on * (E * max_d + leakage * (1.0 - E) * max_d +
+                               direct_exc * max_a) +
+                        a_on * max_a) * em_pop
+
+            # Generate counts
+            counts_d = rs.poisson(lam=eff_em_d * self.t_step).astype(np.uint8)
+            if bg_d is not None:
+                bg_counts_d = rs.poisson(lam=bg_d * self.t_step,
+                                         size=(1, n_steps)).astype(np.uint8)
+                counts_d = np.vstack([counts_d, bg_counts_d])
+
+            counts_a = rs.poisson(lam=eff_em_a * self.t_step).astype(np.uint8)
+            if bg_a is not None:
+                bg_counts_a = rs.poisson(lam=bg_a * self.t_step,
+                                         size=(1, n_steps)).astype(np.uint8)
+                counts_a = np.vstack([counts_a, bg_counts_a])
+
+            # Convert counts to timestamps
+            pos_pop = position[pop] if save_pos else None
+
+            # Donor channel
+            t_d, p_d, po_d = self._timestamps_from_counts(
+                counts_d, ts_times, max_rate=max_d, position=pos_pop, sort=False)
+            p_d += pop.start
+            ts_d_list.append(t_d)
+            par_d_list.append(p_d)
+            if save_pos: pos_d_list.append(po_d)
+
+            # Acceptor channel
+            t_a, p_a, po_a = self._timestamps_from_counts(
+                counts_a, ts_times, max_rate=max_a, position=pos_pop, sort=False)
+            p_a += pop.start
+            ts_a_list.append(t_a)
+            par_a_list.append(p_a)
+            if save_pos: pos_a_list.append(po_a)
+
+        # Merge and sort
+        def merge_and_sort(ts_l, par_l, pos_l):
+            if len(ts_l) == 0:
+                empty_pos = np.empty((0, 3), dtype=np.float32) if save_pos else None
+                return np.array([], dtype='int64'), np.array([], dtype='uint8'), empty_pos
+            ts = np.hstack(ts_l)
+            par = np.hstack(par_l)
+            pos = np.vstack(pos_l) if save_pos else None
+            idx = ts.argsort(kind='mergesort')
+            return ts[idx], par[idx], (pos[idx] if save_pos else None)
+
+        ts_d, par_d, pos_d = merge_and_sort(ts_d_list, par_d_list, pos_d_list)
+        ts_a, par_a, pos_a = merge_and_sort(ts_a_list, par_a_list, pos_a_list)
+
+        return ts_d, par_d, pos_d, ts_a, par_a, pos_a
 def sim_timetrace(emission, max_rate, t_step):
     """Draw random emitted photons from Poisson(emission_rates).
     """

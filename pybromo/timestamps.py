@@ -45,7 +45,7 @@ def merge_da_multi(*da_arrays):
     for donor, acceptor in zip(donors, acceptors):
         merged_arrays.append(np.concatenate((donor, acceptor)))
     a_ch = np.hstack([np.zeros(donors[0].shape[0], dtype=bool),
-                      np.ones(acceptors[1].shape[0], dtype=bool)])
+                      np.ones(acceptors[0].shape[0], dtype=bool)])
     index_sort = merged_arrays[0].argsort()
     return [a[index_sort] for a in merged_arrays], a_ch[index_sort]
 
@@ -438,3 +438,150 @@ class TimestampSimulation:
         data = self._make_photon_hdf5(identity=identity)
         phc.hdf5.save_photon_hdf5(data, h5_fname=str(filepath),
                                   overwrite=overwrite)
+
+
+class AlexSmFretSimulation(TimestampSimulation):
+    """Simulate ALEX smFRET data using a Simulation object.
+    """
+    def __init__(self, S, em_rates, E_values, num_particles,
+                 bg_rate_d, bg_rate_a,
+                 alex_period, d_duty, a_duty,
+                 leakage=0.0, direct_exc=0.0,
+                 timeslice=None):
+        """Setup parameters for ALEX simulation.
+
+        Arguments:
+            S (Simulation): an instance of Simulation.
+            em_rates (list): peak emission rate for each population (cps).
+            E_values (list): FRET efficiency for each population.
+            num_particles (list): number of particles in each population.
+            bg_rate_d, bg_rate_a (float): background rates (cps).
+            alex_period (float): ALEX modulation period (s).
+            d_duty, a_duty (float): duty cycle for D and A lasers.
+            leakage (float): fraction of D emission in A channel.
+            direct_exc (float): fraction of A excitation by D-laser.
+            timeslice (float): duration of simulation (s).
+        """
+        if timeslice is None:
+            timeslice = S.t_max
+
+        super().__init__(S, em_rates, E_values, num_particles,
+                         bg_rate_d, bg_rate_a, timeslice)
+
+        self.alex_period = alex_period
+        self.d_duty = d_duty
+        self.a_duty = a_duty
+        self.leakage = leakage
+        self.direct_exc = direct_exc
+
+    txt_header_alex = """
+        ALEX Timestamps simulation: Mixture
+        -----------------------------------
+
+        Trajectories file:
+            {self.traj_filename}
+            time slice: {self.timeslice} s
+        ALEX Parameters:
+            Period: {self.alex_period:.1e} s
+            D-duty: {self.d_duty:.1%}
+            A-duty: {self.a_duty:.1%}
+            Leakage: {self.leakage:.1%}
+            Direct Excitation: {self.direct_exc:.1%}
+        """
+
+    def __str__(self):
+        txt = [self.txt_header_alex.format(self=self)]
+        pop_params = (self.em_rates, self.E_values, self.num_particles,
+                      self.D_values, self.populations)
+        for p_i, (em_rate, E, num_pop, D, pop) in enumerate(zip(*pop_params)):
+            txt.append(self.txt_population.format(p_i=p_i + 1,
+                       num_pop=num_pop, D=D, em_rate=em_rate, E=E, pop=pop))
+
+        txt.append(self.txt_background.format(self=self))
+        return ''.join(txt)
+
+    def _compact_repr(self):
+        s_base = super()._compact_repr()
+        s_alex = 'ALEX_T%.1e_d%.1f_a%.1f_L%.1f_dir%.1f' % (
+            self.alex_period, self.d_duty, self.a_duty, self.leakage, self.direct_exc)
+        return s_base + '_' + s_alex
+
+    def run(self, rs, overwrite=True, skip_existing=False, path=None,
+            chunksize=None, save_pos=False):
+        """Compute ALEX timestamps for current populations.
+        """
+        if path is None:
+            path = str(self.S.store.filepath.parent)
+
+        # We need to simulate both D and A channels in one pass to maintain ALEX timing
+        self.S.simulate_timestamps_alex(
+            populations=self.populations,
+            max_rates_d_laser=self.em_rates_d,
+            max_rates_a_laser=self.em_rates, # Assuming acceptor laser peak matches em_rates
+            E_values=self.E_values,
+            leakage=self.leakage,
+            direct_exc=self.direct_exc,
+            bg_rate_d=self.bg_rate_d,
+            bg_rate_a=self.bg_rate_a,
+            alex_period=self.alex_period,
+            d_duty=self.d_duty,
+            a_duty=self.a_duty,
+            rs=rs, overwrite=overwrite, skip_existing=skip_existing,
+            path=path, chunksize=chunksize, save_pos=save_pos,
+            timeslice=self.timeslice
+        )
+        self.save_pos = save_pos
+        print('\n - ALEX Simulation Completed.', flush=True)
+
+    def merge_da(self):
+        """Merge donor and acceptor timestamps for ALEX.
+        """
+        print(' - Merging ALEX D and A timestamps', flush=True)
+        # S.simulate_timestamps_alex saves to _timestamps_d and _timestamps_a
+        ts_d = self.S._timestamps_d
+        ts_par_d = self.S._tparticles_d
+        ts_a = self.S._timestamps_a
+        ts_par_a = self.S._tparticles_a
+
+        ts_pos_d = getattr(self.S, '_tpositions_d', None)
+        ts_pos_a = getattr(self.S, '_tpositions_a', None)
+
+        da_pairs = [ts_d, ts_a, ts_par_d, ts_par_a]
+        self.pos = None
+        if ts_pos_d is not None and ts_pos_a is not None:
+            da_pairs.extend([ts_pos_d, ts_pos_a])
+            (ts, part, pos), a_ch = merge_da_multi(*da_pairs)
+            self.pos = pos
+        else:
+            (ts, part), a_ch = merge_da_multi(*da_pairs)
+
+        self.ts, self.a_ch, self.part = ts, a_ch, part
+        self.clk_p = ts_d.attrs['clk_p']
+
+    def _make_photon_hdf5(self, identity=None):
+        data = super()._make_photon_hdf5(identity=identity)
+
+        # Add ALEX specific metadata
+        data['setup'].update(
+            modulated_excitation = True,
+            excitation_alternated = (True,),
+            excitation_cw = (True,),
+            excitation_wavelengths = np.array([532e-9, 635e-9]),
+            detection_wavelengths = np.array([580e-9, 670e-9])
+        )
+        if identity is None:
+             identity = dict(author='PyBroMo ALEX Simulation', author_affiliation='PyBroMo')
+        else:
+             identity.update(author='PyBroMo ALEX Simulation', author_affiliation='PyBroMo')
+        data['identity'] = identity
+        # Define D-only and A-only excitation periods for FRETBursts
+        # These are in units of Phase [0, 1]
+        # In our implementation:
+        # D-laser: [0, d_duty]
+        # A-laser: [0.5, 0.5 + a_duty]
+        data['photon_data']['measurement_specs'].update(
+            alex_excitation_period1 = np.array([0, self.d_duty]),
+            alex_excitation_period2 = np.array([0.5, 0.5 + self.a_duty]),
+            alex_period = self.alex_period
+        )
+        return data

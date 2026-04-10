@@ -55,3 +55,39 @@ exclude = ["notebooks*"]
 [build-system]
 requires = ["setuptools","versioneer"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+ignore = [
+    "D213",
+    "COM812",
+    "D203",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "C901",
+    "G004",
+    ]
+select = ["ALL"]
+fixable = ["ALL"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",
+    "D",
+    "ANN001",
+    "ANN002",
+    "ANN003",
+    "ANN201",
+    "ANN202",
+    "PLC0415",
+    "SLF001",
+    "PLR2004",
+    "INP001",
+    "ARG001",
+    "ARG003",
+    ]

@@ -5,31 +5,30 @@
 #
 
 from ._version import get_versions
-__version__ = get_versions()['version']
+
+__version__ = get_versions()["version"]
 del get_versions
 
+from . import diffusion, plot, timestamps
 from . import loadutils as lu
-from . import diffusion
-from . import timestamps
-from . import plot
+
 try:
     from . import plotter
 except ImportError:  # pragma: no cover - optional GUI dependency
     plotter = None
 
-from .utils import hdf5
+import warnings
 
 from .diffusion import Box, Particles, ParticlesSimulation, hashfunc
 from .psflib import GaussianPSF, NumericPSF
 from .timestamps import TimestampSimulation
+from .utils import hdf5
 
-import warnings
 
-
-def deprecation(message):
+def deprecation(message) -> None:
     warnings.warn(message, FutureWarning, stacklevel=2)
 
 
 def hash_(x):
-    deprecation('The function `hash_` is deprecated, please use `hashfunc` instead.')
+    deprecation("The function `hash_` is deprecated, please use `hashfunc` instead.")
     return hashfunc(x)

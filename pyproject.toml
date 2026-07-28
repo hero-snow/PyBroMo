@@ -37,6 +37,11 @@ dev = [
     "fretbursts",
     "pybromo",
     "ruff>=0.14.9",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.14.4",
+    "ty>=0.0.64",
 ]
 
 [tool.uv.sources]
@@ -70,12 +75,13 @@ ignore = [
     "PLR0913",
     "PLR0915",
     "C901",
-    "G004",
+    "T201",
     ]
 select = ["ALL"]
 fixable = ["ALL"]
 
 [tool.ruff.lint.per-file-ignores]
+"versioneer.py" = ["ALL"]
 "tests/**/*.py" = [
     "S101",
     "D",
@@ -91,3 +97,6 @@ fixable = ["ALL"]
     "ARG001",
     "ARG003",
     ]
+
+select = ["ALL"]
+fixable = ["ALL"]

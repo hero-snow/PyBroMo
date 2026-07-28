@@ -4,36 +4,35 @@
 # Copyright (C) 2013-2015 Antonino Ingargiola tritemio@gmail.com
 #
 
-"""
-This module contains the core classes and functions to perform the
+"""This module contains the core classes and functions to perform the
 Brownian motion and timestamps simulation.
 """
 
-import os
 import hashlib
 import itertools
+import json
+import os
 from pathlib import Path
 from time import ctime
-import json
 
 import numpy as np
-from numpy import array, sqrt
 import tables
-
-from .storage import TrajectoryStore, TimestampStore, ExistingArrayError
-from .iter_chunks import iter_chunksize, iter_chunk_index
-from .psflib import NumericPSF, GaussianPSF, psf_from_pytables
+from numpy import array
 
 from ._version import get_versions
-__version__ = get_versions()['version']
+from .iter_chunks import iter_chunk_index, iter_chunksize
+from .psflib import GaussianPSF, psf_from_pytables
+from .storage import ExistingArrayError, TimestampStore, TrajectoryStore
+
+__version__ = get_versions()["version"]
 
 # Avogadro constant
-NA = 6.022141e23    # [mol^-1]
+NA = 6.022141e23  # [mol^-1]
 
 
 def get_seed(seed, ID=0, EID=0):
     """Get a random seed that is a combination of `seed`, `ID` and `EID`.
-    Provides different, but deterministic, seeds in parallel computations
+    Provides different, but deterministic, seeds in parallel computations.
     """
     return seed + EID + 100 * ID
 
@@ -44,16 +43,15 @@ def hashfunc(x):
 
 class Box:
     """The simulation box. Sizes in meters."""
-    def __init__(self, x1, x2, y1, y2, z1, z2):
+
+    def __init__(self, x1, x2, y1, y2, z1, z2) -> None:
         self.x1, self.x2 = x1, x2
         self.y1, self.y2 = y1, y2
         self.z1, self.z2 = z1, z2
         self.b = array([[x1, x2], [y1, y2], [z1, z2]])
 
     def to_dict(self):
-        return {'x1': self.x1, 'x2': self.x2,
-                'y1': self.y1, 'y2': self.y2,
-                'z1': self.z1, 'z2': self.z2}
+        return {"x1": self.x1, "x2": self.x2, "y1": self.y1, "y2": self.y2, "z1": self.z1, "z2": self.z2}
 
     def to_json(self):
         return json.dumps(self.to_dict())
@@ -68,17 +66,15 @@ class Box:
         """Box volume in liters."""
         return self.volume * 1e3
 
-    def __repr__(self):
-        return u"Box: X %.1fum, Y %.1fum, Z %.1fum" % (
-            (self.x2 - self.x1) * 1e6,
-            (self.y2 - self.y1) * 1e6,
-            (self.z2 - self.z1) * 1e6)
+    def __repr__(self) -> str:
+        return f"Box: X {(self.x2 - self.x1) * 1e6:.1f}um, Y {(self.y2 - self.y1) * 1e6:.1f}um, Z {(self.z2 - self.z1) * 1e6:.1f}um"
 
 
-class Particle(object):
+class Particle:
     """Class to describe a single particle."""
-    def __init__(self, D, x0, y0, z0):
-        self.D = D   # diffusion coefficient in SI units, m^2/s
+
+    def __init__(self, D, x0, y0, z0) -> None:
+        self.D = D  # diffusion coefficient in SI units, m^2/s
         self.x0, self.y0, self.z0 = x0, y0, z0
 
     @property
@@ -89,12 +85,11 @@ class Particle(object):
         return (self.r0 == other.r0).all() and self.D == other.D
 
     def to_dict(self):
-        return {'D': self.D, 'x0': self.x0, 'y0': self.y0, 'z0': self.z0}
+        return {"D": self.D, "x0": self.x0, "y0": self.y0, "z0": self.z0}
 
 
-class Particles(object):
-    """
-    An efficient container for particles using NumPy arrays (struct of arrays).
+class Particles:
+    """An efficient container for particles using NumPy arrays (struct of arrays).
 
     This class stores particle properties (diffusion coefficients and initial
     positions) in NumPy arrays rather than a list of `Particle` objects. This
@@ -102,6 +97,7 @@ class Particles(object):
     and allows for faster, vectorized operations, especially beneficial for
     simulations with a large number of particles.
     """
+
     @staticmethod
     def _generate(num_particles, D, box, rs):
         """Generate particle data as NumPy arrays."""
@@ -114,8 +110,7 @@ class Particles(object):
 
     @staticmethod
     def from_specs(num_particles, D, box, rs=None, seed=1):
-        """
-        Create particles populations in a single-step with improved performance.
+        """Create particles populations in a single-step with improved performance.
 
         This implementation has been optimized to avoid repeated memory
         reallocations by pre-calculating the total number of particles and
@@ -135,13 +130,14 @@ class Particles(object):
                 initialized from `seed`.
             seed (uint): when `rs` is None, `seed` is used to initialize the
                 random state. `seed` is ignored when `rs` is not None.
+
         """
         if rs is None:
             rs = np.random.RandomState(seed=seed)
 
-        msg = 'The sequence `num_particles` must have length >= 1.'
+        msg = "The sequence `num_particles` must have length >= 1."
         assert len(num_particles) > 0, msg
-        msg = 'ERROR: `num_particles` and `D` must have the same length.'
+        msg = "ERROR: `num_particles` and `D` must have the same length."
         assert len(num_particles) == len(D), msg
 
         # Pre-allocate arrays to avoid costly concatenations in a loop
@@ -150,7 +146,7 @@ class Particles(object):
         positions_array = np.empty((total_particles, 3), dtype=np.float64)
 
         start_idx = 0
-        for num, D_val in zip(num_particles, D):
+        for num, D_val in zip(num_particles, D, strict=False):
             end_idx = start_idx + num
 
             # Directly generate and fill the slices of the arrays
@@ -162,15 +158,14 @@ class Particles(object):
             start_idx = end_idx
 
         # Initialize the Particles object with the pre-filled arrays
-        P = Particles(0, 0, box, rs=rs, seed=seed) # Create an empty shell
+        P = Particles(0, 0, box, rs=rs, seed=seed)  # Create an empty shell
         P._D = D_array
         P._positions = positions_array
         return P
 
     @staticmethod
     def num_particles_to_slices(num_particles_per_population):
-        """
-        Convert a list of number of particles per population
+        """Convert a list of number of particles per population
         into a list of `slice` object, each indexing a population.
         """
         slices = []
@@ -180,7 +175,7 @@ class Particles(object):
             i_prev += num_particles
         return slices
 
-    def __init__(self, num_particles, D, box, rs=None, seed=1, particles=None):
+    def __init__(self, num_particles, D, box, rs=None, seed=1, particles=None) -> None:
         """A set of `N` Particle() objects with random position in `box`.
 
         Arguments:
@@ -193,6 +188,7 @@ class Particles(object):
                 random state. `seed` is ignored when `rs` is not None.
             particles (list or None): when not None, initialize the object from
                 this list that must containing only `Particle` objects.
+
         """
         if rs is None:
             rs = np.random.RandomState(seed=seed)
@@ -212,15 +208,15 @@ class Particles(object):
                 self._positions[i] = p.r0
         self.rs_hash = hashfunc(self.init_random_state)[:3]
 
-    def add(self, num_particles, D):
-        """Add particles with diffusion coefficient `D` at random positions.
-        """
+    def add(self, num_particles, D) -> None:
+        """Add particles with diffusion coefficient `D` at random positions."""
         if D in self.diffusion_coeff:
-            msg = ('A population with this diffusion coefficient is already '
-                   'present. Change diffusion coefficient to add a new population.')
+            msg = (
+                "A population with this diffusion coefficient is already "
+                "present. Change diffusion coefficient to add a new population."
+            )
             raise ValueError(msg)
-        new_D, new_positions = self._generate(
-            num_particles, D, box=self.box, rs=self.rs)
+        new_D, new_positions = self._generate(num_particles, D, box=self.box, rs=self.rs)
         self._D = np.concatenate((self._D, new_D))
         self._positions = np.concatenate((self._positions, new_positions))
 
@@ -229,11 +225,11 @@ class Particles(object):
         return [self[i] for i in range(len(self))]
 
     def to_json(self):
-        return json.dumps({'particles': [v.to_dict() for v in self]})
+        return json.dumps({"particles": [v.to_dict() for v in self]})
 
     @classmethod
     def from_json(cls, json_str):
-        particles = [Particle(**p) for p in json.loads(json_str)['particles']]
+        particles = [Particle(**p) for p in json.loads(json_str)["particles"]]
         # This returned obj will throw an error if the user calls .add()
         return cls(particles=particles, num_particles=None, D=None, box=None)
 
@@ -242,7 +238,7 @@ class Particles(object):
         for i in range(len(self)):
             yield self[i]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._D)
 
     def __getitem__(self, i):
@@ -255,10 +251,9 @@ class Particles(object):
             return False
         # If the other object is also a vectorized Particles object, compare arrays
         if isinstance(other_particles, Particles):
-            return (np.all(self._D == other_particles._D) and
-                    np.allclose(self._positions, other_particles._positions))
+            return np.all(self._D == other_particles._D) and np.allclose(self._positions, other_particles._positions)
         # Fallback for comparing with list-based or other iterables
-        equal = np.array([p1 == p2 for p1, p2 in zip(self, other_particles)])
+        equal = np.array([p1 == p2 for p1, p2 in zip(self, other_particles, strict=False)])
         return equal.all()
 
     @property
@@ -286,16 +281,14 @@ class Particles(object):
 
         The order of the diffusion coefficients is as in self.diffusion_coeff.
         """
-        return [(diff_coeff, len(list(group)))
-                for diff_coeff, group in itertools.groupby(self.diffusion_coeff)]
+        return [(diff_coeff, len(list(group))) for diff_coeff, group in itertools.groupby(self.diffusion_coeff)]
 
     def short_repr(self):
         s = ["P%d_D%.2g" % (n, D) for D, n in self.diffusion_coeff_counts]
         return "_".join(s)
 
-    def __repr__(self):
-        s = ["#Particles: %d D: %.2g" % (n, D)
-             for D, n in self.diffusion_coeff_counts]
+    def __repr__(self) -> str:
+        s = ["#Particles: %d D: %.2g" % (n, D) for D, n in self.diffusion_coeff_counts]
         return ", ".join(s)
 
 
@@ -304,8 +297,7 @@ def wrap_periodic(a, a1, a2):
     This function is used to apply periodic boundary conditions.
     """
     a -= a1
-    wrapped = np.mod(a, a2 - a1) + a1
-    return wrapped
+    return np.mod(a, a2 - a1) + a1
 
 
 def wrap_mirror(a, a1, a2):
@@ -325,26 +317,27 @@ class MultipleMatchesError(Exception):
     pass
 
 
-class ParticlesSimulation(object):
-    """Class that performs the Brownian motion simulation of N particles.
-    """
-    _PREFIX_TRAJ = 'pybromo'
-    _PREFIX_TS = 'times'
+class ParticlesSimulation:
+    """Class that performs the Brownian motion simulation of N particles."""
+
+    _PREFIX_TRAJ = "pybromo"
+    _PREFIX_TS = "times"
 
     @staticmethod
     def datafile_from_hash(hash_, prefix, path):
-        """Return pathlib.Path for a data-file with given hash and prefix.
-        """
-        pattern = '%s_%s*.h*' % (prefix, hash_)
+        """Return pathlib.Path for a data-file with given hash and prefix."""
+        pattern = f"{prefix}_{hash_}*.h*"
         datafiles = list(path.glob(pattern))
         if len(datafiles) == 0:
-            raise NoMatchError('No matches for "%s"' % pattern)
+            msg = f'No matches for "{pattern}"'
+            raise NoMatchError(msg)
         if len(datafiles) > 1:
-            raise MultipleMatchesError('More than 1 match for "%s"' % pattern)
+            msg = f'More than 1 match for "{pattern}"'
+            raise MultipleMatchesError(msg)
         return datafiles[0]
 
     @staticmethod
-    def from_datafile(hash_, path='./', ignore_timestamps=False, mode='r'):
+    def from_datafile(hash_, path="./", ignore_timestamps=False, mode="r"):
         """Load simulation from disk trajectories and (when present) timestamps.
 
         `mode` is only applied for opening a prexisting timestamp file.
@@ -352,19 +345,17 @@ class ParticlesSimulation(object):
         path = Path(path)
         assert path.exists()
 
-        file_traj = ParticlesSimulation.datafile_from_hash(
-            hash_, prefix=ParticlesSimulation._PREFIX_TRAJ, path=path)
-        store = TrajectoryStore(file_traj, mode='r')
+        file_traj = ParticlesSimulation.datafile_from_hash(hash_, prefix=ParticlesSimulation._PREFIX_TRAJ, path=path)
+        store = TrajectoryStore(file_traj, mode="r")
 
-        psf_pytables = store.h5file.get_node('/psf/default_psf')
+        psf_pytables = store.h5file.get_node("/psf/default_psf")
         psf = psf_from_pytables(psf_pytables)
-        box = store.h5file.get_node_attr('/parameters', 'box')
-        P = store.h5file.get_node_attr('/parameters', 'particles')
+        box = store.h5file.get_node_attr("/parameters", "box")
+        P = store.h5file.get_node_attr("/parameters", "particles")
 
-        names = ['t_step', 't_max', 'EID', 'ID']
+        names = ["t_step", "t_max", "EID", "ID"]
         kwargs = {name: store.numeric_params[name] for name in names}
-        S = ParticlesSimulation(particles=Particles.from_json(P), box=box,
-                                psf=psf, **kwargs)
+        S = ParticlesSimulation(particles=Particles.from_json(P), box=box, psf=psf, **kwargs)
 
         # Emulate S.open_store_traj()
         S.store = store
@@ -372,14 +363,15 @@ class ParticlesSimulation(object):
         S.traj_group = S.store.h5file.root.trajectories
         S.emission = S.traj_group.emission
         S.emission_tot = S.traj_group.emission_tot
-        if 'position' in S.traj_group:
+        if "position" in S.traj_group:
             S.position = S.traj_group.position
-        elif 'position_rz' in S.traj_group:
+        elif "position_rz" in S.traj_group:
             S.position = S.traj_group.position_rz
         if not ignore_timestamps:
             try:
                 file_ts = ParticlesSimulation.datafile_from_hash(
-                    hash_, prefix=ParticlesSimulation._PREFIX_TS, path=path)
+                    hash_, prefix=ParticlesSimulation._PREFIX_TS, path=path
+                )
             except NoMatchError:
                 # There are no timestamps saved.
                 pass
@@ -387,7 +379,7 @@ class ParticlesSimulation(object):
                 # Load the timestamps
                 S.ts_store = TimestampStore(file_ts, mode=mode)
                 S.ts_group = S.ts_store.h5file.root.timestamps
-                print(' - Found matching timestamps.')
+                print(" - Found matching timestamps.")
         return S
 
     @staticmethod
@@ -403,15 +395,14 @@ class ParticlesSimulation(object):
             rs = np.random.RandomState(seed=seed)
             # Try to set the random state from the last session to preserve
             # a single random stream when simulating timestamps multiple times
-            if 'last_random_state' in group._v_attrs:
-                rs.set_state(group._v_attrs['last_random_state'])
-                print("INFO: Random state set to last saved state in '%s'." %
-                      group._v_name)
+            if "last_random_state" in group._v_attrs:
+                rs.set_state(group._v_attrs["last_random_state"])
+                print(f"INFO: Random state set to last saved state in '{group._v_name}'.")
             else:
                 print("INFO: Random state initialized from seed (%d)." % seed)
         return rs
 
-    def __init__(self, t_step, t_max, particles, box, psf, EID=0, ID=0):
+    def __init__(self, t_step, t_max, particles, box, psf, EID=0, ID=0) -> None:
         """Initialize the simulation parameters.
 
         Arguments:
@@ -428,6 +419,7 @@ class ParticlesSimulation(object):
 
         Note that EID and ID are shown in the string representation and are
         used to save unique file names.
+
         """
         self.particles = particles
         self.box = box
@@ -450,11 +442,10 @@ class ParticlesSimulation(object):
     def sigma_1d(self):
         return np.sqrt(2 * self.particles.diffusion_coeff * self.t_step)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         pM = self.concentration(pM=True)
         s = repr(self.box)
-        s += "\n%s, %.1f pM, t_step %.1fus, t_max %.1fs" %\
-             (self.particles, pM, self.t_step * 1e6, self.t_max)
+        s += f"\n{self.particles}, {pM:.1f} pM, t_step {self.t_step * 1e6:.1f}us, t_max {self.t_max:.1f}s"
         s += " ID_EID %d %d" % (self.ID, self.EID)
         return s
 
@@ -463,27 +454,27 @@ class ParticlesSimulation(object):
         This can be used to generate unique file names for simulations
         that have the same parameters and just different ID or EID.
         """
-        hash_numeric = 't_step=%.3e, t_max=%.2f, np=%d, conc=%.2e' % \
-            (self.t_step, self.t_max, self.num_particles, self.concentration())
-        hash_list = [hash_numeric, self.particles.short_repr(), repr(self.box),
-                     self.psf.hash()]
+        hash_numeric = "t_step=%.3e, t_max=%.2f, np=%d, conc=%.2e" % (
+            self.t_step,
+            self.t_max,
+            self.num_particles,
+            self.concentration(),
+        )
+        hash_list = [hash_numeric, self.particles.short_repr(), repr(self.box), self.psf.hash()]
         return hashlib.md5(repr(hash_list).encode()).hexdigest()
 
     def compact_name_core(self, hashsize=6, t_max=False):
-        """Compact representation of simulation params (no ID, EID and t_max)
-        """
+        """Compact representation of simulation params (no ID, EID and t_max)."""
         Moles = self.concentration()
-        name = "%s_%dpM_step%.1fus" % (
-            self.particles.short_repr(), Moles * 1e12, self.t_step * 1e6)
+        name = "%s_%dpM_step%.1fus" % (self.particles.short_repr(), Moles * 1e12, self.t_step * 1e6)
         if hashsize > 0:
-            name = self.hash()[:hashsize] + '_' + name
+            name = self.hash()[:hashsize] + "_" + name
         if t_max:
-            name += "_t_max%.1fs" % self.t_max
+            name += f"_t_max{self.t_max:.1f}s"
         return name
 
     def compact_name(self, hashsize=6):
-        """Compact representation of all simulation parameters
-        """
+        """Compact representation of all simulation parameters."""
         # this can be made more robust for ID > 9 (double digit)
         s = self.compact_name_core(hashsize, t_max=True)
         s += "_ID%d-%d" % (self.ID, self.EID)
@@ -496,18 +487,17 @@ class ParticlesSimulation(object):
         The values are 2-element tuples: first element is the value and
         second element is a string describing the parameter (metadata).
         """
-        nparams = dict(
-            D = (self.diffusion_coeff.mean(), 'Diffusion coefficient (m^2/s)'),
-            np = (self.num_particles, 'Number of simulated particles'),
-            t_step = (self.t_step, 'Simulation time-step (s)'),
-            t_max = (self.t_max, 'Simulation total time (s)'),
-            ID = (self.ID, 'Simulation ID (int)'),
-            EID = (self.EID, 'IPython Engine ID (int)'),
-            pico_mol = (self.concentration() * 1e12,
-                        'Particles concentration (pM)'))
-        return nparams
+        return {
+            "D": (self.diffusion_coeff.mean(), "Diffusion coefficient (m^2/s)"),
+            "np": (self.num_particles, "Number of simulated particles"),
+            "t_step": (self.t_step, "Simulation time-step (s)"),
+            "t_max": (self.t_max, "Simulation total time (s)"),
+            "ID": (self.ID, "Simulation ID (int)"),
+            "EID": (self.EID, "IPython Engine ID (int)"),
+            "pico_mol": (self.concentration() * 1e12, "Particles concentration (pM)"),
+        }
 
-    def print_sizes(self):
+    def print_sizes(self) -> None:
         """Print on-disk array sizes required for current set of parameters."""
         float_size = 4
         MB = 1024 * 1024
@@ -517,12 +507,11 @@ class ParticlesSimulation(object):
         print("  Number of particles:", self.num_particles)
         print("  Number of time steps:", self.n_samples)
         print("  Emission array - 1 particle (float32): %.1f MB" % (size_ / MB))
-        print("  Emission array (float32): %.1f MB" % em_size)
-        print("  Position array (float32): %.1f MB " % pos_size)
+        print(f"  Emission array (float32): {em_size:.1f} MB")
+        print(f"  Position array (float32): {pos_size:.1f} MB ")
 
     def concentration(self, pM=False):
-        """Return the concentration (in Moles) of the particles in the box.
-        """
+        """Return the concentration (in Moles) of the particles in the box."""
         concentr = (self.num_particles / NA) / self.box.volume_L
         if pM:
             concentr *= 1e12
@@ -542,72 +531,72 @@ class ParticlesSimulation(object):
                 All the previously stored data in that file will be lost.
         """[1:]
 
-    def _open_store(self, store, prefix='', path='./', mode='w'):
-        """Open and setup the on-disk storage file (pytables HDF5 file).
+    def _open_store(self, store, prefix="", path="./", mode="w"):
+        (
+            """Open and setup the on-disk storage file (pytables HDF5 file).
 
         Low level method used to implement different stores.
 
         Arguments:
             store (one of storage.Store classes): the store class to use.
-        """ + self.__DOCS_STORE_ARGS___ + """
+        """
+            + self.__DOCS_STORE_ARGS___
+            + """
         Returns:
             Store object.
         """
-        store_fname = '%s_%s.hdf5' % (prefix, self.compact_name())
-        attr_params = dict(particles=self.particles.to_json(), box=self.box)
-        kwargs = dict(path=path, nparams=self.numeric_params,
-                      attr_params=attr_params, mode=mode)
-        store_obj = store(store_fname, **kwargs)
-        return store_obj
+        )
+        store_fname = f"{prefix}_{self.compact_name()}.hdf5"
+        attr_params = {"particles": self.particles.to_json(), "box": self.box}
+        kwargs = {"path": path, "nparams": self.numeric_params, "attr_params": attr_params, "mode": mode}
+        return store(store_fname, **kwargs)
 
-    def open_store_traj(self, path='./', chunksize=2**19, chunkslice='bytes',
-                        mode='w', radial=False):
-        """Open and setup the on-disk storage file (pytables HDF5 file).
+    def open_store_traj(self, path="./", chunksize=2**19, chunkslice="bytes", mode="w", radial=False) -> None:
+        (
+            """Open and setup the on-disk storage file (pytables HDF5 file).
 
         Arguments:
-        """ + self.__DOCS_STORE_ARGS___
-        if hasattr(self, 'store'):
+        """
+            + self.__DOCS_STORE_ARGS___
+        )
+        if hasattr(self, "store"):
             return
-        self.store = self._open_store(TrajectoryStore,
-                                      prefix=ParticlesSimulation._PREFIX_TRAJ,
-                                      path=path,
-                                      mode=mode)
+        self.store = self._open_store(TrajectoryStore, prefix=ParticlesSimulation._PREFIX_TRAJ, path=path, mode=mode)
 
-        self.psf_pytables = self.psf.to_hdf5(self.store.h5file, '/psf')
-        self.store.h5file.create_hard_link('/psf', 'default_psf',
-                                           target=self.psf_pytables)
+        self.psf_pytables = self.psf.to_hdf5(self.store.h5file, "/psf")
+        self.store.h5file.create_hard_link("/psf", "default_psf", target=self.psf_pytables)
         # Note psf.fname is the psf name in `h5file.root.psf`
         self.traj_group = self.store.h5file.root.trajectories
-        self.traj_group._v_attrs['psf_name'] = self.psf.fname
+        self.traj_group._v_attrs["psf_name"] = self.psf.fname
 
-        kwargs = dict(chunksize=chunksize, chunkslice=chunkslice)
+        kwargs = {"chunksize": chunksize, "chunkslice": chunkslice}
         self.emission_tot = self.store.add_emission_tot(**kwargs)
         self.emission = self.store.add_emission(**kwargs)
         self.position = self.store.add_position(radial=radial, **kwargs)
 
-    def open_store_timestamp(self, path=None, mode='w'):
-        """Open and setup the on-disk storage file (pytables HDF5 file).
+    def open_store_timestamp(self, path=None, mode="w") -> None:
+        (
+            """Open and setup the on-disk storage file (pytables HDF5 file).
 
         Arguments:
-        """ + self.__DOCS_STORE_ARGS___
-        if hasattr(self, 'ts_store'):
+        """
+            + self.__DOCS_STORE_ARGS___
+        )
+        if hasattr(self, "ts_store"):
             return
         if path is None:
-            if hasattr(self, 'store'):
+            if hasattr(self, "store"):
                 # Use same folder of the trajectory file
                 path = self.store.filepath.parent
             else:
                 # No trajectory file, use current folder
-                path = '.'
-        self.ts_store = self._open_store(TimestampStore,
-                                         prefix=ParticlesSimulation._PREFIX_TS,
-                                         path=path,
-                                         mode=mode)
+                path = "."
+        self.ts_store = self._open_store(TimestampStore, prefix=ParticlesSimulation._PREFIX_TS, path=path, mode=mode)
         self.ts_group = self.ts_store.h5file.root.timestamps
 
-    def _sim_trajectories(self, time_size, start_pos, rs,
-                          total_emission=False, save_pos=False, radial=False,
-                          wrap_func=wrap_periodic):
+    def _sim_trajectories(
+        self, time_size, start_pos, rs, total_emission=False, save_pos=False, radial=False, wrap_func=wrap_periodic
+    ):
         """Simulate (in-memory) `time_size` steps of trajectories.
 
         This function is a performance-critical part of the simulation.
@@ -637,6 +626,7 @@ class ParticlesSimulation(object):
         Returns:
             POS (list): list of 3D trajectories arrays (3 x time_size)
             em (array): array of emission (total or per-particle)
+
         """
         time_size = int(time_size)
         num_particles = self.num_particles
@@ -645,15 +635,13 @@ class ParticlesSimulation(object):
         else:
             em = np.zeros((num_particles, time_size), dtype=np.float32)
 
-        POS = np.empty((num_particles, 2 if radial else 3, time_size),
-                       dtype=np.float32)
+        POS = np.empty((num_particles, 2 if radial else 3, time_size), dtype=np.float32)
 
         # Reshape sigma_1d for broadcasting
         sigma_1d = self.sigma_1d.reshape(-1, 1, 1)
 
         # Generate random displacements for all particles at once
-        delta_pos = rs.normal(loc=0, scale=sigma_1d,
-                              size=(num_particles, 3, time_size))
+        delta_pos = rs.normal(loc=0, scale=sigma_1d, size=(num_particles, 3, time_size))
 
         # Calculate trajectories using cumsum
         pos = np.cumsum(delta_pos, axis=-1, out=delta_pos)
@@ -685,22 +673,19 @@ class ParticlesSimulation(object):
         # Optimization: When using a Gaussian PSF centered at xc=0, we can
         # avoid a redundant sqrt operation by passing the squared radial
         # distance directly.
-        Ro_squared = pos[:, 0, :]**2 + pos[:, 1, :]**2
+        Ro_squared = pos[:, 0, :] ** 2 + pos[:, 1, :] ** 2
         if isinstance(self.psf, GaussianPSF) and self.psf.rc[0] == 0:
-            current_em = self.psf.eval_xz_sq_xc0(Ro_squared, Z)**2
+            current_em = self.psf.eval_xz_sq_xc0(Ro_squared, Z) ** 2
         else:
             Ro = np.sqrt(Ro_squared)
-            current_em = self.psf.eval_xz(Ro, Z)**2
+            current_em = self.psf.eval_xz(Ro, Z) ** 2
 
-        if total_emission:
-            em = np.sum(current_em, axis=0, dtype=np.float32)
-        else:
-            em = current_em.astype(np.float32)
+        em = np.sum(current_em, axis=0, dtype=np.float32) if total_emission else current_em.astype(np.float32)
 
         if save_pos:
             if radial:
                 # Ro may not be defined if the GaussianPSF path was taken
-                if 'Ro' not in locals():
+                if "Ro" not in locals():
                     Ro = np.sqrt(Ro_squared)
                 POS[:, 0, :] = Ro
                 POS[:, 1, :] = Z
@@ -714,10 +699,19 @@ class ParticlesSimulation(object):
         # in the calling function.
         return (POS if save_pos else None), em
 
-    def simulate_diffusion(self, save_pos=False, total_emission=True,
-                           radial=False, rs=None, seed=1, path='./',
-                           wrap_func=wrap_periodic,
-                           chunksize=2**19, chunkslice='times', verbose=True):
+    def simulate_diffusion(
+        self,
+        save_pos=False,
+        total_emission=True,
+        radial=False,
+        rs=None,
+        seed=1,
+        path="./",
+        wrap_func=wrap_periodic,
+        chunksize=2**19,
+        chunkslice="times",
+        verbose=True,
+    ) -> None:
         """Simulate Brownian motion trajectories and emission rates.
 
         This method performs the Brownian motion simulation using the current
@@ -740,19 +734,19 @@ class ParticlesSimulation(object):
                 condition (use :func:`wrap_periodic` or :func:`wrap_mirror`).
             path (string): a folder where simulation data is saved.
             verbose (bool): if False, prints no output.
+
         """
         if rs is None:
             rs = np.random.RandomState(seed=seed)
-        self.open_store_traj(chunksize=chunksize, chunkslice=chunkslice,
-                             radial=radial, path=path)
+        self.open_store_traj(chunksize=chunksize, chunkslice=chunkslice, radial=radial, path=path)
         # Save current random state for reproducibility
-        self.traj_group._v_attrs['init_random_state'] = rs.get_state()
+        self.traj_group._v_attrs["init_random_state"] = rs.get_state()
 
         em_store = self.emission_tot if total_emission else self.emission
 
-        print('- Start trajectories simulation - %s' % ctime(), flush=True)
+        print(f"- Start trajectories simulation - {ctime()}", flush=True)
         if verbose:
-            print('[PID %d] Diffusion time:' % os.getpid(), end='')
+            print("[PID %d] Diffusion time:" % os.getpid(), end="")
         i_chunk = 0
         t_chunk_size = self.emission.chunkshape[1]
         chunk_duration = t_chunk_size * self.t_step
@@ -763,68 +757,66 @@ class ParticlesSimulation(object):
             if verbose:
                 curr_time = int(chunk_duration * (i_chunk + 1))
                 if curr_time > prev_time:
-                    print(' %ds' % curr_time, end='', flush=True)
+                    print(" %ds" % curr_time, end="", flush=True)
                     prev_time = curr_time
 
-            POS, em = self._sim_trajectories(time_size, par_start_pos, rs,
-                                             total_emission=total_emission,
-                                             save_pos=save_pos, radial=radial,
-                                             wrap_func=wrap_func)
+            POS, em = self._sim_trajectories(
+                time_size,
+                par_start_pos,
+                rs,
+                total_emission=total_emission,
+                save_pos=save_pos,
+                radial=radial,
+                wrap_func=wrap_func,
+            )
 
             # Append em to the permanent storage
             # if total_emission, data is just a linear array
             # otherwise is a 2-D array (self.num_particles, c_size)
             em_store.append(em)
             if save_pos:
-                self.position.append(POS.astype('float32'))
+                self.position.append(POS.astype("float32"))
             i_chunk += 1
             self.store.h5file.flush()
 
         # Save current random state
-        self.traj_group._v_attrs['last_random_state'] = rs.get_state()
+        self.traj_group._v_attrs["last_random_state"] = rs.get_state()
         self.store.h5file.flush()
-        print('\n- End trajectories simulation - %s' % ctime(), flush=True)
+        print(f"\n- End trajectories simulation - {ctime()}", flush=True)
 
-    def _get_ts_name_mix_core(self, max_rates, populations, bg_rate,
-                              timeslice=None):
+    def _get_ts_name_mix_core(self, max_rates, populations, bg_rate, timeslice=None):
         if timeslice is None:
             timeslice = self.t_max
         if populations is None:
             populations = [slice(0, self.num_particles)]
         s = []
-        for ipop, (max_rate, pop) in enumerate(zip(max_rates, populations)):
-            kw = dict(npop=ipop + 1, max_rate=max_rate,
-                      npart=pop.stop - pop.start, pop=pop, bg_rate=bg_rate)
-            s.append('Pop{npop}_P{npart}_Pstart{pop.start}_'
-                     'max_rate{max_rate:.0f}cps_BG{bg_rate:.0f}cps'
-                     .format(**kw))
-        s.append('t_{}s'.format(timeslice))
-        return '_'.join(s)
+        for ipop, (max_rate, pop) in enumerate(zip(max_rates, populations, strict=False)):
+            kw = {"npop": ipop + 1, "max_rate": max_rate, "npart": pop.stop - pop.start, "pop": pop, "bg_rate": bg_rate}
+            s.append("Pop{npop}_P{npart}_Pstart{pop.start}_max_rate{max_rate:.0f}cps_BG{bg_rate:.0f}cps".format(**kw))
+        s.append(f"t_{timeslice}s")
+        return "_".join(s)
 
-    def _get_ts_name_mix(self, max_rates, populations, bg_rate, rs,
-                         hashsize=6):
+    def _get_ts_name_mix(self, max_rates, populations, bg_rate, rs, hashsize=6) -> str:
         s = self._get_ts_name_mix_core(max_rates, populations, bg_rate)
-        return '%s_rs_%s' % (s, hashfunc(rs.get_state())[:hashsize])
+        return f"{s}_rs_{hashfunc(rs.get_state())[:hashsize]}"
 
     def timestamps_match_pattern(self, pattern):
         return [t for t in self.timestamp_names if pattern in t]
 
-    def timestamps_match_mix(self, max_rates, populations, bg_rate,
-                             hash_=None):
+    def timestamps_match_mix(self, max_rates, populations, bg_rate, hash_=None):
         pattern = self._get_ts_name_mix_core(max_rates, populations, bg_rate)
         if hash_ is not None:
-            pattern = '_'.join([pattern, 'rs', hash_])
+            pattern = f"{pattern}_rs_{hash_}"
         return self.timestamps_match_pattern(pattern)
 
     def get_timestamp_data(self, name):
-        """Return matching (timestamps, particles, positions) pytables arrays.
-        """
-        par_name = name + '_par'
-        pos_name = name + '_pos'
-        timestamps = self.ts_store.h5file.get_node('/timestamps', name)
-        particles = self.ts_store.h5file.get_node('/timestamps', par_name)
+        """Return matching (timestamps, particles, positions) pytables arrays."""
+        par_name = name + "_par"
+        pos_name = name + "_pos"
+        timestamps = self.ts_store.h5file.get_node("/timestamps", name)
+        particles = self.ts_store.h5file.get_node("/timestamps", par_name)
         try:
-            positions = self.ts_store.h5file.get_node('/timestamps', pos_name)
+            positions = self.ts_store.h5file.get_node("/timestamps", pos_name)
         except tables.NoSuchNodeError:
             positions = None
         return timestamps, particles, positions
@@ -833,14 +825,13 @@ class ParticlesSimulation(object):
     def timestamp_names(self):
         names = []
         for node in self.ts_group._f_list_nodes():
-            if node.name.endswith('_par') or node.name.endswith('_pos'):
+            if node.name.endswith("_par") or node.name.endswith("_pos"):
                 continue
             names.append(node.name)
         return names
 
     @staticmethod
-    def _timestamps_from_counts(counts, time_axis, max_rate,
-                                position=None, sort=True):
+    def _timestamps_from_counts(counts, time_axis, max_rate, position=None, sort=True):
         """Compute timestamps from timetraces of counts.
 
         This function operates on a given "group" of particles
@@ -869,6 +860,7 @@ class ParticlesSimulation(object):
             of the "real" particle ID. If needed, the caller should add an
             offset to the returned particles array to obtain
             the real particle ID.
+
         """
         # This function has been vectorized to eliminate Python loops, leading to a
         # significant performance improvement. The original implementation iterated
@@ -885,9 +877,7 @@ class ParticlesSimulation(object):
             empty_pos = None
             if position is not None:
                 empty_pos = np.empty(shape=(0, spatial_dims), dtype=np.float32)
-            return (np.array([], dtype=np.int64),
-                    np.array([], dtype=np.int64),
-                    empty_pos)
+            return (np.array([], dtype=np.int64), np.array([], dtype=np.int64), empty_pos)
 
         # Find the indices of all non-zero counts
         particles, times = np.nonzero(counts)
@@ -901,7 +891,7 @@ class ParticlesSimulation(object):
         if position is not None:
             # Handle background particles by creating a NaN-filled position array
             is_bg_particle = particles >= position.shape[0]
-            pos = np.full((len(particles), position.shape[1]), np.nan, dtype='float32')
+            pos = np.full((len(particles), position.shape[1]), np.nan, dtype="float32")
 
             # Fill in positions for non-background particles
             non_bg_mask = ~is_bg_particle
@@ -910,7 +900,7 @@ class ParticlesSimulation(object):
             ts_positions = np.repeat(pos, num_counts, axis=0)
 
         if sort:
-            index_sort = ts_times.argsort(kind='mergesort')
+            index_sort = ts_times.argsort(kind="mergesort")
             ts_times = ts_times[index_sort]
             ts_particles = ts_particles[index_sort]
             if position is not None:
@@ -918,9 +908,9 @@ class ParticlesSimulation(object):
 
         return ts_times, ts_particles, ts_positions
 
-    def _sim_timestamps_populations(self, emission, max_rates, populations,
-                                    bg_rate, i_start, rs,
-                                    position=None, scale=10):
+    def _sim_timestamps_populations(
+        self, emission, max_rates, populations, bg_rate, i_start, rs, position=None, scale=10
+    ):
         """Simulate timestamps for all the populations of particles.
 
         This method simulates timestamps for a time-chunk starting at
@@ -956,29 +946,28 @@ class ParticlesSimulation(object):
             - `ts_times`: timestamps with unit `t_step / scale`
             - `ts_particles`: particle IDs for each timestamp
             - `ts_positions`: particle position for each timestamp
+
         """
         if populations is None:
             populations = [slice(0, self.num_particles)]
         save_pos = position is not None
 
-        times = (i_start + np.arange(emission.shape[1], dtype='int64')) * scale
+        times = (i_start + np.arange(emission.shape[1], dtype="int64")) * scale
 
         # These lists will contain one array per population
         ts_times_poplist = []
         ts_particles_poplist = []
         ts_positions_poplist = []
         # Loop through populations
-        for ipop, (max_rate, pop) in enumerate(zip(max_rates, populations)):
+        for ipop, (max_rate, pop) in enumerate(zip(max_rates, populations, strict=False)):
             is_last_population = ipop == len(populations) - 1
             bg = bg_rate if is_last_population else None
             emission_pop = emission[pop]
             position_pop = position[pop] if save_pos else None
-            counts_pop = sim_counts_timetrace_with_bg(
-                emission_pop, max_rate, bg, self.t_step, rs=rs)
-            ts_times_pop, ts_particles_pop, ts_positions_pop = \
-                self._timestamps_from_counts(
-                    counts_pop, times, max_rate=max_rate,
-                    sort=False, position=position_pop)
+            counts_pop = sim_counts_timetrace_with_bg(emission_pop, max_rate, bg, self.t_step, rs=rs)
+            ts_times_pop, ts_particles_pop, ts_positions_pop = self._timestamps_from_counts(
+                counts_pop, times, max_rate=max_rate, sort=False, position=position_pop
+            )
             ts_particles_pop += pop.start
             ts_times_poplist.append(ts_times_pop)
             ts_particles_poplist.append(ts_particles_pop)
@@ -994,18 +983,30 @@ class ParticlesSimulation(object):
             assert ts_positions.shape[0] == ts_times.shape[0]
 
         # Sort the merged timestamps (from all populations)
-        index_sort = ts_times.argsort(kind='mergesort')
+        index_sort = ts_times.argsort(kind="mergesort")
         ts_times = ts_times[index_sort]
         ts_particles = ts_particles[index_sort]
         if save_pos:
             ts_positions = ts_positions[index_sort]
         return ts_times, ts_particles, ts_positions
 
-    def simulate_timestamps_mix(self, max_rates, populations, bg_rate,
-                                rs=None, seed=1, chunksize=2**16,
-                                comp_filter=None, overwrite=False,
-                                skip_existing=False, scale=10, save_pos=False,
-                                path=None, t_chunksize=None, timeslice=None):
+    def simulate_timestamps_mix(
+        self,
+        max_rates,
+        populations,
+        bg_rate,
+        rs=None,
+        seed=1,
+        chunksize=2**16,
+        comp_filter=None,
+        overwrite=False,
+        skip_existing=False,
+        scale=10,
+        save_pos=False,
+        path=None,
+        t_chunksize=None,
+        timeslice=None,
+    ) -> None:
         """Compute a timestamps array for a mixture of N populations.
 
         Timestamp data are saved to disk and accessible as pytables arrays in
@@ -1039,11 +1040,12 @@ class ParticlesSimulation(object):
                 for each emitted photon.
             timeslice (float or None): timestamps are simulated until
                 `timeslice` seconds. If None, simulate until `self.t_max`.
+
         """
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
-            if hasattr(self, 'emission') and hasattr(self.emission, 'chunkshape'):
+            if hasattr(self, "emission") and hasattr(self.emission, "chunkshape"):
                 t_chunksize = self.emission.chunkshape[1]
             else:
                 t_chunksize = 2**19
@@ -1052,31 +1054,33 @@ class ParticlesSimulation(object):
             timeslice_size = timeslice // self.t_step
 
         name = self._get_ts_name_mix(max_rates, populations, bg_rate, rs=rs)
-        kw = dict(
-            name=name, clk_p=self.t_step / scale,
-            max_rates=max_rates, bg_rate=bg_rate, populations=populations,
-            num_particles=self.num_particles,
-            bg_particle=self.num_particles,
-            overwrite=overwrite, chunksize=chunksize,
-            save_pos=save_pos,
-            )
+        kw = {
+            "name": name,
+            "clk_p": self.t_step / scale,
+            "max_rates": max_rates,
+            "bg_rate": bg_rate,
+            "populations": populations,
+            "num_particles": self.num_particles,
+            "bg_particle": self.num_particles,
+            "overwrite": overwrite,
+            "chunksize": chunksize,
+            "save_pos": save_pos,
+        }
         if save_pos:
             kw.update(spatial_dims=self.position.shape[1])
         if comp_filter is not None:
             kw.update(comp_filter=comp_filter)
         try:
-            self._timestamps, self._tparticles, self._tpositions = (
-                self.ts_store.add_timestamps(**kw))
-        except ExistingArrayError as e:
+            self._timestamps, self._tparticles, self._tpositions = self.ts_store.add_timestamps(**kw)
+        except ExistingArrayError:
             if skip_existing:
-                print(' - Skipping already present timestamps array.')
+                print(" - Skipping already present timestamps array.")
                 return
-            else:
-                raise e
+            raise
 
-        self.ts_group._v_attrs['init_random_state'] = rs.get_state()
-        self._timestamps.attrs['init_random_state'] = rs.get_state()
-        self._timestamps.attrs['PyBroMo'] = __version__
+        self.ts_group._v_attrs["init_random_state"] = rs.get_state()
+        self._timestamps.attrs["init_random_state"] = rs.get_state()
+        self._timestamps.attrs["PyBroMo"] = __version__
 
         ts_list, part_list, pos_list = [], [], []
         # Load emission in chunks, and save only the final timestamps
@@ -1084,45 +1088,53 @@ class ParticlesSimulation(object):
         # Loop through time and for each time-slice simulate all populations
         pos_chunk = None
         for i_start, i_end in iter_chunk_index(timeslice_size, t_chunksize):
-
             curr_time = np.around(i_start * self.t_step, decimals=0)
             if curr_time > prev_time:
-                print(' %.1fs' % curr_time, end='', flush=True)
+                print(f" {curr_time:.1f}s", end="", flush=True)
                 prev_time = curr_time
 
             em_chunk = self.emission[:, i_start:i_end]
             if save_pos:
                 pos_chunk = self.position[:, :, i_start:i_end]
 
-            ts_times_chunk, ts_particles_chunk, ts_positions_chunk = \
-                self._sim_timestamps_populations(
-                    em_chunk, max_rates, populations, bg_rate, i_start,
-                    rs, scale=scale, position=pos_chunk)
+            ts_times_chunk, ts_particles_chunk, ts_positions_chunk = self._sim_timestamps_populations(
+                em_chunk, max_rates, populations, bg_rate, i_start, rs, scale=scale, position=pos_chunk
+            )
 
             # Save sorted "photons" (suffix '_s')
             ts_list.append(ts_times_chunk)
             part_list.append(ts_particles_chunk)
             pos_list.append(ts_positions_chunk)  # it may be a list of None
 
-        for ts, part, pos in zip(ts_list, part_list, pos_list):
+        for ts, part, pos in zip(ts_list, part_list, pos_list, strict=False):
             self._timestamps.append(ts)
             self._tparticles.append(part)
             if save_pos:
                 self._tpositions.append(pos)
 
         # Save current random state so it can be resumed in the next session
-        self.ts_group._v_attrs['last_random_state'] = rs.get_state()
-        self._timestamps.attrs['last_random_state'] = rs.get_state()
+        self.ts_group._v_attrs["last_random_state"] = rs.get_state()
+        self._timestamps.attrs["last_random_state"] = rs.get_state()
         self.ts_store.h5file.flush()
 
-    def simulate_timestamps_mix_da(self, max_rates_d, max_rates_a,
-                                   populations, bg_rate_d, bg_rate_a,
-                                   rs=None, seed=1, chunksize=2**16,
-                                   comp_filter=None, overwrite=False,
-                                   skip_existing=False, scale=10,
-                                   path=None, t_chunksize=2**19,
-                                   timeslice=None):
-
+    def simulate_timestamps_mix_da(
+        self,
+        max_rates_d,
+        max_rates_a,
+        populations,
+        bg_rate_d,
+        bg_rate_a,
+        rs=None,
+        seed=1,
+        chunksize=2**16,
+        comp_filter=None,
+        overwrite=False,
+        skip_existing=False,
+        scale=10,
+        path=None,
+        t_chunksize=2**19,
+        timeslice=None,
+    ) -> None:
         """Compute D and A timestamps arrays for a mixture of N populations.
 
         This method reads the emission from disk once, and generates a pair
@@ -1162,11 +1174,12 @@ class ParticlesSimulation(object):
             path (string): folder where to save the data.
             timeslice (float or None): timestamps are simulated until
                 `timeslice` seconds. If None, simulate until `self.t_max`.
+
         """
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
-            if hasattr(self, 'emission') and hasattr(self.emission, 'chunkshape'):
+            if hasattr(self, "emission") and hasattr(self.emission, "chunkshape"):
                 t_chunksize = self.emission.chunkshape[1]
             else:
                 t_chunksize = 2**19
@@ -1177,62 +1190,58 @@ class ParticlesSimulation(object):
         name_d = self._get_ts_name_mix(max_rates_d, populations, bg_rate_d, rs)
         name_a = self._get_ts_name_mix(max_rates_a, populations, bg_rate_a, rs)
 
-        kw = dict(clk_p=self.t_step / scale,
-                  populations=populations,
-                  num_particles=self.num_particles,
-                  bg_particle=self.num_particles,
-                  overwrite=overwrite, chunksize=chunksize)
+        kw = {
+            "clk_p": self.t_step / scale,
+            "populations": populations,
+            "num_particles": self.num_particles,
+            "bg_particle": self.num_particles,
+            "overwrite": overwrite,
+            "chunksize": chunksize,
+        }
         if comp_filter is not None:
             kw.update(comp_filter=comp_filter)
 
         kw.update(name=name_d, max_rates=max_rates_d, bg_rate=bg_rate_d)
         try:
-            self._timestamps_d, self._tparticles_d, _ = (
-                self.ts_store.add_timestamps(**kw))
-        except ExistingArrayError as e:
+            self._timestamps_d, self._tparticles_d, _ = self.ts_store.add_timestamps(**kw)
+        except ExistingArrayError:
             if skip_existing:
-                print(' - Skipping already present timestamps array.')
+                print(" - Skipping already present timestamps array.")
                 return
-            else:
-                raise e
+            raise
 
         kw.update(name=name_a, max_rates=max_rates_a, bg_rate=bg_rate_a)
         try:
-            self._timestamps_a, self._tparticles_a, _ = (
-                self.ts_store.add_timestamps(**kw))
-        except ExistingArrayError as e:
+            self._timestamps_a, self._tparticles_a, _ = self.ts_store.add_timestamps(**kw)
+        except ExistingArrayError:
             if skip_existing:
-                print(' - Skipping already present timestamps array.')
+                print(" - Skipping already present timestamps array.")
                 return
-            else:
-                raise e
+            raise
 
-        self.ts_group._v_attrs['init_random_state'] = rs.get_state()
-        self._timestamps_d.attrs['init_random_state'] = rs.get_state()
-        self._timestamps_d.attrs['PyBroMo'] = __version__
-        self._timestamps_a.attrs['init_random_state'] = rs.get_state()
-        self._timestamps_a.attrs['PyBroMo'] = __version__
+        self.ts_group._v_attrs["init_random_state"] = rs.get_state()
+        self._timestamps_d.attrs["init_random_state"] = rs.get_state()
+        self._timestamps_d.attrs["PyBroMo"] = __version__
+        self._timestamps_a.attrs["init_random_state"] = rs.get_state()
+        self._timestamps_a.attrs["PyBroMo"] = __version__
 
         # Load emission in chunks, and save only the final timestamps
         prev_time = 0
         for i_start, i_end in iter_chunk_index(timeslice_size, t_chunksize):
-
             curr_time = np.around(i_start * self.t_step, decimals=1)
             if curr_time > prev_time:
-                print(' %.1fs' % curr_time, end='', flush=True)
+                print(f" {curr_time:.1f}s", end="", flush=True)
                 prev_time = curr_time
 
             em_chunk = self.emission[:, i_start:i_end]
 
-            times_chunk_s_d, par_index_chunk_s_d, _ = \
-                self._sim_timestamps_populations(
-                    em_chunk, max_rates_d, populations, bg_rate_d, i_start,
-                    rs=rs, scale=scale)
+            times_chunk_s_d, par_index_chunk_s_d, _ = self._sim_timestamps_populations(
+                em_chunk, max_rates_d, populations, bg_rate_d, i_start, rs=rs, scale=scale
+            )
 
-            times_chunk_s_a, par_index_chunk_s_a, _ = \
-                self._sim_timestamps_populations(
-                    em_chunk, max_rates_a, populations, bg_rate_a, i_start,
-                    rs=rs, scale=scale)
+            times_chunk_s_a, par_index_chunk_s_a, _ = self._sim_timestamps_populations(
+                em_chunk, max_rates_a, populations, bg_rate_a, i_start, rs=rs, scale=scale
+            )
 
             # Save sorted timestamps (suffix '_s') and corresponding particles
             self._timestamps_d.append(times_chunk_s_d)
@@ -1241,17 +1250,28 @@ class ParticlesSimulation(object):
             self._tparticles_a.append(par_index_chunk_s_a)
 
         # Save current random state so it can be resumed in the next session
-        self.ts_group._v_attrs['last_random_state'] = rs.get_state()
-        self._timestamps_d._v_attrs['last_random_state'] = rs.get_state()
+        self.ts_group._v_attrs["last_random_state"] = rs.get_state()
+        self._timestamps_d._v_attrs["last_random_state"] = rs.get_state()
         self.ts_store.h5file.flush()
 
-    def simulate_timestamps_mix_da_online(self, max_rates_d, max_rates_a,
-                                 populations, bg_rate_d, bg_rate_a,
-                                 rs=None, seed=1, chunksize=2**16,
-                                 comp_filter=None, overwrite=False,
-                                 skip_existing=False, scale=10,
-                                 path=None, t_chunksize=2**19,
-                                 timeslice=None):
+    def simulate_timestamps_mix_da_online(
+        self,
+        max_rates_d,
+        max_rates_a,
+        populations,
+        bg_rate_d,
+        bg_rate_a,
+        rs=None,
+        seed=1,
+        chunksize=2**16,
+        comp_filter=None,
+        overwrite=False,
+        skip_existing=False,
+        scale=10,
+        path=None,
+        t_chunksize=2**19,
+        timeslice=None,
+    ) -> None:
         """Compute D and A timestamps arrays for a mixture of N populations.
 
         This method simulates the diffusion, emission and generates a pair
@@ -1287,6 +1307,7 @@ class ParticlesSimulation(object):
             path (string): folder where to save the data.
             timeslice (float or None): timestamps are simulated until
                 `timeslice` seconds. If None, simulate until `self.t_max`.
+
         """
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
@@ -1299,69 +1320,69 @@ class ParticlesSimulation(object):
         name_d = self._get_ts_name_mix(max_rates_d, populations, bg_rate_d, rs)
         name_a = self._get_ts_name_mix(max_rates_a, populations, bg_rate_a, rs)
 
-        kw = dict(clk_p=self.t_step / scale,
-                  populations=populations,
-                  num_particles=self.num_particles,
-                  bg_particle=self.num_particles,
-                  overwrite=overwrite, chunksize=chunksize)
+        kw = {
+            "clk_p": self.t_step / scale,
+            "populations": populations,
+            "num_particles": self.num_particles,
+            "bg_particle": self.num_particles,
+            "overwrite": overwrite,
+            "chunksize": chunksize,
+        }
         if comp_filter is not None:
             kw.update(comp_filter=comp_filter)
 
         kw.update(name=name_d, max_rates=max_rates_d, bg_rate=bg_rate_d)
         try:
-            self._timestamps_d, self._tparticles_d, _ = (
-                self.ts_store.add_timestamps(**kw))
-        except ExistingArrayError as e:
+            self._timestamps_d, self._tparticles_d, _ = self.ts_store.add_timestamps(**kw)
+        except ExistingArrayError:
             if skip_existing:
-                print(' - Skipping, timestamps array already present.')
+                print(" - Skipping, timestamps array already present.")
                 return
-            else:
-                raise e
+            raise
 
         kw.update(name=name_a, max_rates=max_rates_a, bg_rate=bg_rate_a)
         try:
-            self._timestamps_a, self._tparticles_a, _ = (
-                self.ts_store.add_timestamps(**kw))
-        except ExistingArrayError as e:
+            self._timestamps_a, self._tparticles_a, _ = self.ts_store.add_timestamps(**kw)
+        except ExistingArrayError:
             if skip_existing:
-                print(' - Skipping, timestamps array already present.')
+                print(" - Skipping, timestamps array already present.")
                 return
-            else:
-                raise e
+            raise
 
-        self.ts_group._v_attrs['init_random_state'] = rs.get_state()
-        self.ts_group.attrs['Diffusion'] = 1
-        self._timestamps_d.attrs['init_random_state'] = rs.get_state()
-        self._timestamps_d.attrs['PyBroMo'] = __version__
-        self._timestamps_a.attrs['PyBroMo'] = __version__
+        self.ts_group._v_attrs["init_random_state"] = rs.get_state()
+        self.ts_group.attrs["Diffusion"] = 1
+        self._timestamps_d.attrs["init_random_state"] = rs.get_state()
+        self._timestamps_d.attrs["PyBroMo"] = __version__
+        self._timestamps_a.attrs["PyBroMo"] = __version__
 
-        print('- Start trajectories simulation - %s' % ctime(), flush=True)
+        print(f"- Start trajectories simulation - {ctime()}", flush=True)
         par_start_pos = self.particles.positions
 
         # Load emission in chunks, and save only the final timestamps
         prev_time = 0
-        for i_start, i_end in iter_chunk_index(timeslice_size, t_chunksize):
-
+        for i_start, _i_end in iter_chunk_index(timeslice_size, t_chunksize):
             curr_time = np.around(i_start * self.t_step, decimals=1)
             if curr_time > prev_time:
-                print(' %.1fs' % curr_time, end='', flush=True)
+                print(f" {curr_time:.1f}s", end="", flush=True)
                 prev_time = curr_time
 
-            _, em_chunk = self._sim_trajectories(t_chunksize, par_start_pos,
-                                                 rs,
-                                                 total_emission=False,
-                                                 save_pos=False, radial=False,
-                                                 wrap_func=wrap_periodic)
+            _, em_chunk = self._sim_trajectories(
+                t_chunksize,
+                par_start_pos,
+                rs,
+                total_emission=False,
+                save_pos=False,
+                radial=False,
+                wrap_func=wrap_periodic,
+            )
 
-            times_chunk_s_d, par_index_chunk_s_d, _ = \
-                self._sim_timestamps_populations(
-                    em_chunk, max_rates_d, populations, bg_rate_d, i_start,
-                    rs=rs, scale=scale)
+            times_chunk_s_d, par_index_chunk_s_d, _ = self._sim_timestamps_populations(
+                em_chunk, max_rates_d, populations, bg_rate_d, i_start, rs=rs, scale=scale
+            )
 
-            times_chunk_s_a, par_index_chunk_s_a, _ = \
-                self._sim_timestamps_populations(
-                    em_chunk, max_rates_a, populations, bg_rate_a, i_start,
-                    rs=rs, scale=scale)
+            times_chunk_s_a, par_index_chunk_s_a, _ = self._sim_timestamps_populations(
+                em_chunk, max_rates_a, populations, bg_rate_a, i_start, rs=rs, scale=scale
+            )
 
             # Save sorted timestamps (suffix '_s') and corresponding particles
             self._timestamps_d.append(times_chunk_s_d)
@@ -1370,23 +1391,36 @@ class ParticlesSimulation(object):
             self._tparticles_a.append(par_index_chunk_s_a)
 
         # Save current random state so it can be resumed in the next session
-        self.ts_group._v_attrs['last_random_state'] = rs.get_state()
-        self._timestamps_d._v_attrs['last_random_state'] = rs.get_state()
+        self.ts_group._v_attrs["last_random_state"] = rs.get_state()
+        self._timestamps_d._v_attrs["last_random_state"] = rs.get_state()
         self.ts_store.h5file.flush()
-        print('\n- End trajectories simulation - %s' % ctime(), flush=True)
+        print(f"\n- End trajectories simulation - {ctime()}", flush=True)
 
-
-
-    def simulate_timestamps_alex(self, populations,
-                                 max_rates_d_laser, max_rates_a_laser,
-                                 E_values, leakage, direct_exc,
-                                 bg_rate_d, bg_rate_a,
-                                 alex_period, d_duty, a_duty,
-                                 rs=None, seed=1, chunksize=2**16,
-                                 comp_filter=None, overwrite=False,
-                                 skip_existing=False, scale=10,
-                                 path=None, t_chunksize=2**19,
-                                 timeslice=None, save_pos=False):
+    def simulate_timestamps_alex(
+        self,
+        populations,
+        max_rates_d_laser,
+        max_rates_a_laser,
+        E_values,
+        leakage,
+        direct_exc,
+        bg_rate_d,
+        bg_rate_a,
+        alex_period,
+        d_duty,
+        a_duty,
+        rs=None,
+        seed=1,
+        chunksize=2**16,
+        comp_filter=None,
+        overwrite=False,
+        skip_existing=False,
+        scale=10,
+        path=None,
+        t_chunksize=2**19,
+        timeslice=None,
+        save_pos=False,
+    ) -> None:
         """Compute D and A timestamps for ALEX simulation.
 
         Arguments:
@@ -1407,11 +1441,12 @@ class ParticlesSimulation(object):
             scale (int): factor to convert simulation time to timestamps.
             timeslice (float): duration of simulation in seconds.
             save_pos (bool): whether to save particle positions.
+
         """
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
-            if hasattr(self, 'emission') and hasattr(self.emission, 'chunkshape'):
+            if hasattr(self, "emission") and hasattr(self.emission, "chunkshape"):
                 t_chunksize = self.emission.chunkshape[1]
             else:
                 t_chunksize = 2**19
@@ -1420,21 +1455,37 @@ class ParticlesSimulation(object):
             timeslice_size = int(timeslice // self.t_step)
 
         # Generate a unique name for this ALEX simulation
-        params_hash = hashlib.sha1(str((
-            max_rates_d_laser, max_rates_a_laser, E_values, leakage, direct_exc,
-            bg_rate_d, bg_rate_a, alex_period, d_duty, a_duty, scale
-        )).encode()).hexdigest()[:8]
-        name_d = 'alex_d_%s' % params_hash
-        name_a = 'alex_a_%s' % params_hash
+        params_hash = hashlib.sha1(
+            str(
+                (
+                    max_rates_d_laser,
+                    max_rates_a_laser,
+                    E_values,
+                    leakage,
+                    direct_exc,
+                    bg_rate_d,
+                    bg_rate_a,
+                    alex_period,
+                    d_duty,
+                    a_duty,
+                    scale,
+                )
+            ).encode()
+        ).hexdigest()[:8]
+        name_d = f"alex_d_{params_hash}"
+        name_a = f"alex_a_{params_hash}"
 
         if chunksize is None:
             chunksize = 2**16
-        kw = dict(clk_p=self.t_step / scale,
-                  populations=populations,
-                  num_particles=self.num_particles,
-                  bg_particle=self.num_particles,
-                  overwrite=overwrite, chunksize=chunksize,
-                  save_pos=save_pos)
+        kw = {
+            "clk_p": self.t_step / scale,
+            "populations": populations,
+            "num_particles": self.num_particles,
+            "bg_particle": self.num_particles,
+            "overwrite": overwrite,
+            "chunksize": chunksize,
+            "save_pos": save_pos,
+        }
         if save_pos:
             kw.update(spatial_dims=self.position.shape[1])
         if comp_filter is not None:
@@ -1442,48 +1493,58 @@ class ParticlesSimulation(object):
 
         kw.update(name=name_d, max_rates=max_rates_d_laser, bg_rate=bg_rate_d)
         try:
-            self._timestamps_d, self._tparticles_d, self._tpositions_d = (
-                self.ts_store.add_timestamps(**kw))
-        except ExistingArrayError as e:
+            self._timestamps_d, self._tparticles_d, self._tpositions_d = self.ts_store.add_timestamps(**kw)
+        except ExistingArrayError:
             if skip_existing:
-                print(' - Skipping, ALEX D timestamps already present.')
+                print(" - Skipping, ALEX D timestamps already present.")
             else:
-                raise e
+                raise
 
         kw.update(name=name_a, max_rates=max_rates_a_laser, bg_rate=bg_rate_a)
         try:
-            self._timestamps_a, self._tparticles_a, self._tpositions_a = (
-                self.ts_store.add_timestamps(**kw))
-        except ExistingArrayError as e:
+            self._timestamps_a, self._tparticles_a, self._tpositions_a = self.ts_store.add_timestamps(**kw)
+        except ExistingArrayError:
             if skip_existing:
-                print(' - Skipping, ALEX A timestamps already present.')
+                print(" - Skipping, ALEX A timestamps already present.")
             else:
-                raise e
+                raise
 
-        self.ts_group._v_attrs['init_random_state'] = rs.get_state()
-        self.ts_group._v_attrs['ALEX'] = 1
-        self._timestamps_d.attrs['init_random_state'] = rs.get_state()
-        self._timestamps_d.attrs['PyBroMo'] = __version__
-        self._timestamps_a.attrs['PyBroMo'] = __version__
+        self.ts_group._v_attrs["init_random_state"] = rs.get_state()
+        self.ts_group._v_attrs["ALEX"] = 1
+        self._timestamps_d.attrs["init_random_state"] = rs.get_state()
+        self._timestamps_d.attrs["PyBroMo"] = __version__
+        self._timestamps_a.attrs["PyBroMo"] = __version__
 
-        print('- Start ALEX trajectories simulation - %s' % ctime(), flush=True)
+        print(f"- Start ALEX trajectories simulation - {ctime()}", flush=True)
 
         prev_time = 0
         for i_start, i_end in iter_chunk_index(timeslice_size, t_chunksize):
             curr_time = np.around(i_start * self.t_step, decimals=1)
             if curr_time > prev_time:
-                print(' %.1fs' % curr_time, end='', flush=True)
+                print(f" {curr_time:.1f}s", end="", flush=True)
                 prev_time = curr_time
 
             em_chunk = self.emission[:, i_start:i_end]
             pos_chunk = self.position[:, :, i_start:i_end] if save_pos else None
 
-            ts_d, par_d, pos_d, ts_a, par_a, pos_a = \
-                self._sim_timestamps_alex_populations(
-                    em_chunk, populations, max_rates_d_laser, max_rates_a_laser,
-                    E_values, leakage, direct_exc, bg_rate_d, bg_rate_a,
-                    alex_period, d_duty, a_duty, i_start, rs, scale=scale,
-                    position=pos_chunk)
+            ts_d, par_d, pos_d, ts_a, par_a, pos_a = self._sim_timestamps_alex_populations(
+                em_chunk,
+                populations,
+                max_rates_d_laser,
+                max_rates_a_laser,
+                E_values,
+                leakage,
+                direct_exc,
+                bg_rate_d,
+                bg_rate_a,
+                alex_period,
+                d_duty,
+                a_duty,
+                i_start,
+                rs,
+                scale=scale,
+                position=pos_chunk,
+            )
 
             self._timestamps_d.append(ts_d)
             self._tparticles_d.append(par_d)
@@ -1493,34 +1554,47 @@ class ParticlesSimulation(object):
                 self._tpositions_d.append(pos_d)
                 self._tpositions_a.append(pos_a)
 
-        self.ts_group._v_attrs['last_random_state'] = rs.get_state()
+        self.ts_group._v_attrs["last_random_state"] = rs.get_state()
         self.ts_store.h5file.flush()
-        print('\n- End ALEX trajectories simulation - %s' % ctime(), flush=True)
+        print(f"\n- End ALEX trajectories simulation - {ctime()}", flush=True)
 
-    def _sim_timestamps_alex_populations(self, emission, populations,
-                                         max_rates_d_laser, max_rates_a_laser,
-                                         E_values, leakage, direct_exc,
-                                         bg_rate_d, bg_rate_a,
-                                         alex_period, d_duty, a_duty,
-                                         i_start, rs, scale=10, position=None):
+    def _sim_timestamps_alex_populations(
+        self,
+        emission,
+        populations,
+        max_rates_d_laser,
+        max_rates_a_laser,
+        E_values,
+        leakage,
+        direct_exc,
+        bg_rate_d,
+        bg_rate_a,
+        alex_period,
+        d_duty,
+        a_duty,
+        i_start,
+        rs,
+        scale=10,
+        position=None,
+    ):
         save_pos = position is not None
         n_steps = emission.shape[1]
         times_sim = (i_start + np.arange(n_steps)) * self.t_step
-        phase = (times_sim % alex_period)
+        phase = times_sim % alex_period
         d_on = phase < (alex_period * d_duty)
         # A-laser starts at phase 0.5
         a_start = alex_period * 0.5
         a_on = (phase >= a_start) & (phase < (a_start + alex_period * a_duty))
 
-        ts_times = (i_start + np.arange(n_steps, dtype='int64')) * scale
+        ts_times = (i_start + np.arange(n_steps, dtype="int64")) * scale
 
         ts_d_list, par_d_list, pos_d_list = [], [], []
         ts_a_list, par_a_list, pos_a_list = [], [], []
 
-        for ipop, (pop, max_d, max_a, E) in enumerate(zip(
-                populations, max_rates_d_laser, max_rates_a_laser, E_values)):
-
-            is_last = (ipop == len(populations) - 1)
+        for ipop, (pop, max_d, max_a, E) in enumerate(
+            zip(populations, max_rates_d_laser, max_rates_a_laser, E_values, strict=False)
+        ):
+            is_last = ipop == len(populations) - 1
             bg_d = bg_rate_d if is_last else None
             bg_a = bg_rate_a if is_last else None
 
@@ -1532,21 +1606,17 @@ class ParticlesSimulation(object):
 
             # Effective emission rates for A detector
             # R_A = (d_on * (E*max_d + L*(1-E)*max_d + dir_exc*max_a) + a_on * max_a)
-            eff_em_a = (d_on * (E * max_d + leakage * (1.0 - E) * max_d +
-                               direct_exc * max_a) +
-                        a_on * max_a) * em_pop
+            eff_em_a = (d_on * (E * max_d + leakage * (1.0 - E) * max_d + direct_exc * max_a) + a_on * max_a) * em_pop
 
             # Generate counts
             counts_d = rs.poisson(lam=eff_em_d * self.t_step).astype(np.uint8)
             if bg_d is not None:
-                bg_counts_d = rs.poisson(lam=bg_d * self.t_step,
-                                         size=(1, n_steps)).astype(np.uint8)
+                bg_counts_d = rs.poisson(lam=bg_d * self.t_step, size=(1, n_steps)).astype(np.uint8)
                 counts_d = np.vstack([counts_d, bg_counts_d])
 
             counts_a = rs.poisson(lam=eff_em_a * self.t_step).astype(np.uint8)
             if bg_a is not None:
-                bg_counts_a = rs.poisson(lam=bg_a * self.t_step,
-                                         size=(1, n_steps)).astype(np.uint8)
+                bg_counts_a = rs.poisson(lam=bg_a * self.t_step, size=(1, n_steps)).astype(np.uint8)
                 counts_a = np.vstack([counts_a, bg_counts_a])
 
             # Convert counts to timestamps
@@ -1554,38 +1624,43 @@ class ParticlesSimulation(object):
 
             # Donor channel
             t_d, p_d, po_d = self._timestamps_from_counts(
-                counts_d, ts_times, max_rate=max_d, position=pos_pop, sort=False)
+                counts_d, ts_times, max_rate=max_d, position=pos_pop, sort=False
+            )
             p_d += pop.start
             ts_d_list.append(t_d)
             par_d_list.append(p_d)
-            if save_pos: pos_d_list.append(po_d)
+            if save_pos:
+                pos_d_list.append(po_d)
 
             # Acceptor channel
             t_a, p_a, po_a = self._timestamps_from_counts(
-                counts_a, ts_times, max_rate=max_a, position=pos_pop, sort=False)
+                counts_a, ts_times, max_rate=max_a, position=pos_pop, sort=False
+            )
             p_a += pop.start
             ts_a_list.append(t_a)
             par_a_list.append(p_a)
-            if save_pos: pos_a_list.append(po_a)
+            if save_pos:
+                pos_a_list.append(po_a)
 
         # Merge and sort
         def merge_and_sort(ts_l, par_l, pos_l):
             if len(ts_l) == 0:
                 empty_pos = np.empty((0, 3), dtype=np.float32) if save_pos else None
-                return np.array([], dtype='int64'), np.array([], dtype='uint8'), empty_pos
+                return np.array([], dtype="int64"), np.array([], dtype="uint8"), empty_pos
             ts = np.hstack(ts_l)
             par = np.hstack(par_l)
             pos = np.vstack(pos_l) if save_pos else None
-            idx = ts.argsort(kind='mergesort')
+            idx = ts.argsort(kind="mergesort")
             return ts[idx], par[idx], (pos[idx] if save_pos else None)
 
         ts_d, par_d, pos_d = merge_and_sort(ts_d_list, par_d_list, pos_d_list)
         ts_a, par_a, pos_a = merge_and_sort(ts_a_list, par_a_list, pos_a_list)
 
         return ts_d, par_d, pos_d, ts_a, par_a, pos_a
+
+
 def sim_timetrace(emission, max_rate, t_step):
-    """Draw random emitted photons from Poisson(emission_rates).
-    """
+    """Draw random emitted photons from Poisson(emission_rates)."""
     emission_rates = emission * max_rate * t_step
     return np.random.poisson(lam=emission_rates).astype(np.uint8)
 
@@ -1621,6 +1696,7 @@ def sim_counts_timetrace_with_bg(emission, max_rate, bg_rate, t_step, rs=None):
         particle. If `bg_rate` is None, then `counts.shape == emission.shape`.
         Otherwise, `counts` has one row more than `emission` for storing
         the background counts.
+
     """
     if rs is None:
         rs = np.random.RandomState()
@@ -1632,7 +1708,7 @@ def sim_counts_timetrace_with_bg(emission, max_rate, bg_rate, t_step, rs=None):
 
     # Perform in-place multiplication to modify the original array,
     # preserving the side-effect contract.
-    em *= (max_rate * t_step)
+    em *= max_rate * t_step
 
     if bg_rate is not None:
         # If background is present, create a larger array and combine

@@ -4,8 +4,7 @@
 # Copyright (C) 2013-2015 Antonino Ingargiola tritemio@gmail.com
 #
 
-"""
-PyBroMo - A single molecule diffusion simulator in confocal geometry.
+"""PyBroMo - A single molecule diffusion simulator in confocal geometry.
 
 Copyright (C) 2013-2014 Antonino Ingargiola tritemio@gmail.com
 
@@ -17,6 +16,7 @@ import numpy as np
 
 def iter_chunksize(num_samples, chunksize):
     """Iterator used to iterate in chunks over an array of size `num_samples`.
+
     At each iteration returns `chunksize` except for the last iteration.
     """
     last_chunksize = int(np.mod(num_samples, chunksize))
@@ -52,8 +52,7 @@ def iter_chunk_index(num_samples, chunksize):
 
 
 def reduce_chunk(func, array):
-    """Reduce with `func`, chunk by chunk, the passed pytable `array`.
-    """
+    """Reduce with `func`, chunk by chunk, the passed pytable `array`."""
     res = []
     for slice in iter_chunk_slice(array.shape[-1], array.chunkshape[-1]):
         res.append(func(array[..., slice]))

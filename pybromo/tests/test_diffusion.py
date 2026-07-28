@@ -526,32 +526,44 @@ def test_timestamps_from_counts_vectorized() -> None:
     assert np.allclose(pos_orig, pos_vec, equal_nan=True)
 
 
-def test_AlexSmFretSimulation() -> None:
-    import os
-
+def test_AlexSmFretSimulation(tmp_path) -> None:
     import numpy as np
 
     from pybromo.diffusion import Box, GaussianPSF, Particles, ParticlesSimulation
     from pybromo.timestamps import AlexSmFretSimulation
 
-    t_step, t_max = 1e-6, 0.01
-    box = Box(-1e-6, 1e-6, -1e-6, 1e-6, -1e-6, 1e-6)
+    t_step, t_max = 1e-6, 0.02
+    # Box kept tight around the PSF so that the 2 particles stay in focus long
+    # enough to emit a usable number of photons within `t_max`.
+    box = Box(-0.5e-6, 0.5e-6, -0.5e-6, 0.5e-6, -0.5e-6, 0.5e-6)
     psf = GaussianPSF()
     particles = Particles(num_particles=2, D=1e-11, box=box)
     S = ParticlesSimulation(t_step=t_step, t_max=t_max, particles=particles, box=box, psf=psf)
-    S.simulate_diffusion()
+    # `total_emission=False` is required: timestamp simulation reads the
+    # per-particle `emission` array, which the `total_emission=True` default
+    # leaves empty. Without it this test silently simulated zero photons.
+    S.simulate_diffusion(total_emission=False, path=str(tmp_path), verbose=False)
 
-    em_rates, E_values, num_particles = [10e3], [0.5], [2]
+    em_rates, E_values, num_particles = [100e3], [0.5], [2]
     alex_sim = AlexSmFretSimulation(
         S, em_rates, E_values, num_particles, bg_rate_d=100, bg_rate_a=100, alex_period=1e-3, d_duty=0.4, a_duty=0.4
     )
     rs = np.random.RandomState(42)
     alex_sim.run(rs)
-    alex_sim.save_photon_hdf5()
 
-    assert os.path.exists(alex_sim.filepath)
-    os.remove(alex_sim.filepath)
+    # Regression: `run()` must forward the *total* peak rate. The simulation
+    # applies the (1 - E) / E split itself, so forwarding the pre-split
+    # `em_rates_d` (= em_rates * (1 - E)) applied (1 - E) twice.
+    assert list(S._timestamps_d.attrs["max_rates"]) == em_rates
+
+    # Both channels must actually contain photons emitted by the particles
+    # (particle index < num_particles; the background uses index num_particles).
+    par_d, par_a = S._tparticles_d[:], S._tparticles_a[:]
+    assert (par_d < S.num_particles).sum() > 0
+    assert (par_a < S.num_particles).sum() > 0
+
+    alex_sim.save_photon_hdf5()
+    assert alex_sim.filepath.exists()
+
     S.store.h5file.close()
     S.ts_store.h5file.close()
-    os.remove(S.store.filepath)
-    os.remove(S.ts_store.filepath)

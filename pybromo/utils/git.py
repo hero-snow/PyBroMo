@@ -6,9 +6,8 @@
 """Functions to check the version of a repository by querying git."""
 
 import os
+import shutil
 from subprocess import call, check_output
-
-from distutils.spawn import find_executable
 
 # GIT_PATHS is a list of paths for the git executables
 # In the following we iterate through the list until we find a valid executable.
@@ -18,7 +17,7 @@ GIT_PATHS = []
 # GIT_PATHS.append(r'C:\git.exe')
 
 # Add system path and common locations to the pool of git paths
-system_git = find_executable("git")  # on windows it adds '.exe'
+system_git = shutil.which("git")  # on windows it adds '.exe'
 if system_git is not None:
     GIT_PATHS.append(system_git)
 GIT_PATHS.append(os.environ.get("homepath", "") + r"\AppData\Local\Atlassian\SourceTree\git_local\bin\git.exe")

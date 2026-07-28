@@ -830,6 +830,23 @@ class ParticlesSimulation:
             names.append(node.name)
         return names
 
+    def _check_per_particle_emission(self) -> None:
+        """Fail loudly if the per-particle `emission` array was never filled.
+
+        All the timestamp simulations read `self.emission`, but
+        :meth:`simulate_diffusion` only fills it when called with
+        ``total_emission=False`` (the default stores just `emission_tot`).
+        Without this check the array is present but empty, every chunk read
+        returns 0 columns and the simulation quietly yields zero photons.
+        """
+        if getattr(self, "emission", None) is None or self.emission.shape[1] == 0:
+            msg = (
+                "The per-particle `emission` array is empty. Timestamp simulations "
+                "need it, so run `simulate_diffusion(total_emission=False)` "
+                "(the default `total_emission=True` only stores `emission_tot`)."
+            )
+            raise ValueError(msg)
+
     @staticmethod
     def _timestamps_from_counts(counts, time_axis, max_rate, position=None, sort=True):
         """Compute timestamps from timetraces of counts.
@@ -1042,6 +1059,7 @@ class ParticlesSimulation:
                 `timeslice` seconds. If None, simulate until `self.t_max`.
 
         """
+        self._check_per_particle_emission()
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
@@ -1176,6 +1194,7 @@ class ParticlesSimulation:
                 `timeslice` seconds. If None, simulate until `self.t_max`.
 
         """
+        self._check_per_particle_emission()
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
@@ -1425,8 +1444,11 @@ class ParticlesSimulation:
 
         Arguments:
             populations (list of slices): slices to `self.particles`.
-            max_rates_d_laser (list): peak emission rates for D-laser.
-            max_rates_a_laser (list): peak emission rates for A-laser.
+            max_rates_d_laser (list): *total* peak emission rate under D-laser
+                excitation, one per population. This method applies the
+                (1 - E) / E split itself, so pass the un-split rate.
+            max_rates_a_laser (list): peak A emission rate under A-laser
+                excitation, one per population.
             E_values (list): FRET efficiency for each population.
             leakage (float): fraction of D emission in A channel.
             direct_exc (float): fraction of A excitation by D-laser.
@@ -1443,6 +1465,7 @@ class ParticlesSimulation:
             save_pos (bool): whether to save particle positions.
 
         """
+        self._check_per_particle_emission()
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:

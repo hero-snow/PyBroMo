@@ -529,7 +529,10 @@ class AlexSmFretSimulation(TimestampSimulation):
         # We need to simulate both D and A channels in one pass to maintain ALEX timing
         self.S.simulate_timestamps_alex(
             populations=self.populations,
-            max_rates_d_laser=self.em_rates_d,
+            # Pass the *total* peak emission rate, not `em_rates_d`: the callee
+            # applies the (1 - E) / E split itself, so passing the already-split
+            # `em_rates_d` would apply (1 - E) twice.
+            max_rates_d_laser=self.em_rates,
             max_rates_a_laser=self.em_rates,  # Assuming acceptor laser peak matches em_rates
             E_values=self.E_values,
             leakage=self.leakage,

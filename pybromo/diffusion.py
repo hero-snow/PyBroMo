@@ -831,19 +831,30 @@ class ParticlesSimulation:
         return names
 
     def _check_per_particle_emission(self) -> None:
-        """Fail loudly if the per-particle `emission` array was never filled.
+        """Fail loudly if the per-particle `emission` array is missing or short.
 
         All the timestamp simulations read `self.emission`, but
         :meth:`simulate_diffusion` only fills it when called with
         ``total_emission=False`` (the default stores just `emission_tot`).
-        Without this check the array is present but empty, every chunk read
-        returns 0 columns and the simulation quietly yields zero photons.
+        Without this check the array is present but empty -- or, if a previous
+        run was interrupted, only partially written -- so the chunk reads return
+        too few columns and the simulation quietly yields fewer photons than
+        requested, or none at all.
         """
-        if getattr(self, "emission", None) is None or self.emission.shape[1] == 0:
+        emission = getattr(self, "emission", None)
+        n_stored = 0 if emission is None else emission.shape[1]
+        if n_stored == 0:
             msg = (
                 "The per-particle `emission` array is empty. Timestamp simulations "
                 "need it, so run `simulate_diffusion(total_emission=False)` "
                 "(the default `total_emission=True` only stores `emission_tot`)."
+            )
+            raise ValueError(msg)
+        if n_stored < self.n_samples:
+            msg = (
+                f"The per-particle `emission` array holds {n_stored} of the expected "
+                f"{self.n_samples} time steps, so the trajectory simulation did not run "
+                "to completion. Re-run `simulate_diffusion(total_emission=False)`."
             )
             raise ValueError(msg)
 
@@ -1520,8 +1531,8 @@ class ParticlesSimulation:
         except ExistingArrayError:
             if skip_existing:
                 print(" - Skipping, ALEX D timestamps already present.")
-            else:
-                raise
+                return
+            raise
 
         kw.update(name=name_a, max_rates=max_rates_a_laser, bg_rate=bg_rate_a)
         try:
@@ -1529,8 +1540,8 @@ class ParticlesSimulation:
         except ExistingArrayError:
             if skip_existing:
                 print(" - Skipping, ALEX A timestamps already present.")
-            else:
-                raise
+                return
+            raise
 
         self.ts_group._v_attrs["init_random_state"] = rs.get_state()
         self.ts_group._v_attrs["ALEX"] = 1

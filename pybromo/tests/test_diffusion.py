@@ -526,9 +526,11 @@ def test_timestamps_from_counts_vectorized() -> None:
     assert np.allclose(pos_orig, pos_vec, equal_nan=True)
 
 
-def test_AlexSmFretSimulation(tmp_path) -> None:
-    import numpy as np
+ALEX_EM_RATES = [100e3]
 
+
+def _make_alex_simulation(tmp_path):
+    """Build a small, fully simulated ALEX setup under `tmp_path`."""
     from pybromo.diffusion import Box, GaussianPSF, Particles, ParticlesSimulation
     from pybromo.timestamps import AlexSmFretSimulation
 
@@ -541,29 +543,83 @@ def test_AlexSmFretSimulation(tmp_path) -> None:
     S = ParticlesSimulation(t_step=t_step, t_max=t_max, particles=particles, box=box, psf=psf)
     # `total_emission=False` is required: timestamp simulation reads the
     # per-particle `emission` array, which the `total_emission=True` default
-    # leaves empty. Without it this test silently simulated zero photons.
+    # leaves empty. Without it these tests silently simulated zero photons.
     S.simulate_diffusion(total_emission=False, path=str(tmp_path), verbose=False)
 
-    em_rates, E_values, num_particles = [100e3], [0.5], [2]
     alex_sim = AlexSmFretSimulation(
-        S, em_rates, E_values, num_particles, bg_rate_d=100, bg_rate_a=100, alex_period=1e-3, d_duty=0.4, a_duty=0.4
+        S, ALEX_EM_RATES, [0.5], [2], bg_rate_d=100, bg_rate_a=100, alex_period=1e-3, d_duty=0.4, a_duty=0.4
     )
-    rs = np.random.RandomState(42)
-    alex_sim.run(rs)
+    return S, alex_sim
+
+
+def _alex_timestamp_data(S):
+    """Return the (D, A) timestamp/particle arrays through the public API."""
+    (name_d,) = S.timestamps_match_pattern("alex_d_")
+    (name_a,) = S.timestamps_match_pattern("alex_a_")
+    ts_d, par_d, _ = S.get_timestamp_data(name_d)
+    ts_a, par_a, _ = S.get_timestamp_data(name_a)
+    return ts_d, par_d, ts_a, par_a
+
+
+def test_AlexSmFretSimulation(tmp_path) -> None:
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+
+    ts_d, par_d, _ts_a, par_a = _alex_timestamp_data(S)
 
     # Regression: `run()` must forward the *total* peak rate. The simulation
     # applies the (1 - E) / E split itself, so forwarding the pre-split
     # `em_rates_d` (= em_rates * (1 - E)) applied (1 - E) twice.
-    assert list(S._timestamps_d.attrs["max_rates"]) == em_rates
+    assert list(ts_d.attrs["max_rates"]) == ALEX_EM_RATES
 
     # Both channels must actually contain photons emitted by the particles
     # (particle index < num_particles; the background uses index num_particles).
-    par_d, par_a = S._tparticles_d[:], S._tparticles_a[:]
-    assert (par_d < S.num_particles).sum() > 0
-    assert (par_a < S.num_particles).sum() > 0
+    assert (par_d[:] < S.num_particles).any()
+    assert (par_a[:] < S.num_particles).any()
 
     alex_sim.save_photon_hdf5()
     assert alex_sim.filepath.exists()
 
     S.store.h5file.close()
     S.ts_store.h5file.close()
+
+
+def test_alex_skip_existing_does_not_append(tmp_path) -> None:
+    """Regression: `skip_existing=True` must skip, not re-append.
+
+    `simulate_timestamps_alex` caught `ExistingArrayError` without returning,
+    so a second run printed "Skipping" and then appended a whole second set of
+    timestamps onto the existing arrays, silently doubling the photon stream.
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    ts_d, _par_d, ts_a, _par_a = _alex_timestamp_data(S)
+    nrows_d, nrows_a = ts_d.nrows, ts_a.nrows
+    assert nrows_d > 0
+
+    alex_sim.run(np.random.RandomState(42), overwrite=False, skip_existing=True)
+
+    ts_d, _par_d, ts_a, _par_a = _alex_timestamp_data(S)
+    assert ts_d.nrows == nrows_d
+    assert ts_a.nrows == nrows_a
+
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+
+def test_check_per_particle_emission_rejects_truncated(tmp_path) -> None:
+    """Regression: a partially written `emission` array must not pass the guard.
+
+    Only checking for a completely empty array let an interrupted
+    `simulate_diffusion` through, which again yielded too few photons silently.
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    # Pretend the trajectory simulation died after roughly half the time steps.
+    S.emission.truncate(S.n_samples // 2)
+
+    with pytest.raises(ValueError, match="did not run to completion"):
+        alex_sim.run(np.random.RandomState(0))
+
+    # The guard runs before `open_store_timestamp`, so there is no `ts_store`.
+    assert not hasattr(S, "ts_store")
+    S.store.h5file.close()

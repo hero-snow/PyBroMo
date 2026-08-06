@@ -584,6 +584,40 @@ def test_AlexSmFretSimulation(tmp_path) -> None:
     S.ts_store.h5file.close()
 
 
+def test_alex_photon_hdf5_is_usalex(tmp_path) -> None:
+    """Regression: the exported Photon-HDF5 must be recognizable as us-ALEX.
+
+    `excitation_alternated` held a single entry instead of one per laser, and
+    the alternation period/windows were written in seconds and phase instead of
+    timestamp units. FRETBursts then loaded the file as plain smFRET and
+    dropped the alternation entirely.
+    """
+    import tables
+
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    alex_sim.save_photon_hdf5()
+    clk_p = S.get_timestamp_data(S.timestamps_match_pattern("alex_d_")[0])[0].attrs["clk_p"]
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+    with tables.open_file(str(alex_sim.filepath)) as h5file:
+        setup = h5file.root.setup
+        specs = h5file.root.photon_data.measurement_specs
+        # FRETBursts keys off this exact pair to pick the us-ALEX loader.
+        assert tuple(setup.excitation_alternated.read()) == (True, True)
+        assert tuple(setup.excitation_cw.read()) == (True, True)
+        assert specs.measurement_type.read().decode() == "smFRET-usALEX"
+
+        period = round(alex_sim.alex_period / clk_p)
+        assert specs.alex_period.read() == period
+        assert list(specs.alex_excitation_period1.read()) == [0, round(alex_sim.d_duty * period)]
+        assert list(specs.alex_excitation_period2.read()) == [
+            round(0.5 * period),
+            round((0.5 + alex_sim.a_duty) * period),
+        ]
+
+
 def test_alex_skip_existing_does_not_append(tmp_path) -> None:
     """Regression: `skip_existing=True` must skip, not re-append.
 

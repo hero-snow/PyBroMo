@@ -580,11 +580,14 @@ class AlexSmFretSimulation(TimestampSimulation):
     def _make_photon_hdf5(self, identity=None):
         data = super()._make_photon_hdf5(identity=identity)
 
-        # Add ALEX specific metadata
+        # Add ALEX specific metadata. The per-excitation-source tuples must
+        # carry one entry *per laser* (here 2): FRETBursts recognizes us-ALEX
+        # by `excitation_alternated == (True, True)`, so a 1-element tuple made
+        # it fall back to plain smFRET and ignore the alternation periods.
         data["setup"].update(
             modulated_excitation=True,
-            excitation_alternated=(True,),
-            excitation_cw=(True,),
+            excitation_alternated=(True, True),
+            excitation_cw=(True, True),
             excitation_wavelengths=np.array([532e-9, 635e-9]),
             detection_wavelengths=np.array([580e-9, 670e-9]),
         )
@@ -593,14 +596,16 @@ class AlexSmFretSimulation(TimestampSimulation):
         else:
             identity.update(author="PyBroMo ALEX Simulation", author_affiliation="PyBroMo")
         data["identity"] = identity
-        # Define D-only and A-only excitation periods for FRETBursts
-        # These are in units of Phase [0, 1]
-        # In our implementation:
-        # D-laser: [0, d_duty]
-        # A-laser: [0.5, 0.5 + a_duty]
+        # Define D-only and A-only excitation periods for FRETBursts.
+        # Photon-HDF5 wants the alternation period and its windows in
+        # *timestamp* units, not seconds or phase -- `_sim_timestamps_alex`
+        # turns the D laser on over phase [0, d_duty) and the A laser over
+        # [0.5, 0.5 + a_duty) of each period.
+        period = int(round(self.alex_period / self.clk_p))
         data["photon_data"]["measurement_specs"].update(
-            alex_excitation_period1=np.array([0, self.d_duty]),
-            alex_excitation_period2=np.array([0.5, 0.5 + self.a_duty]),
-            alex_period=self.alex_period,
+            measurement_type="smFRET-usALEX",
+            alex_excitation_period1=np.array([0, round(self.d_duty * period)], dtype="int64"),
+            alex_excitation_period2=np.array([round(0.5 * period), round((0.5 + self.a_duty) * period)], dtype="int64"),
+            alex_period=period,
         )
         return data

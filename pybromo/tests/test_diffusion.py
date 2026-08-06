@@ -561,6 +561,31 @@ def _alex_timestamp_data(S):
     return ts_d, par_d, ts_a, par_a
 
 
+def test_alex_filename_separates_close_parameters(tmp_path) -> None:
+    """Regression: near parameter values must not collapse to one file name.
+
+    `_compact_repr` formatted leakage and direct excitation with `.1f`, so
+    e.g. 0.05 and 0.14 both became "0.1" and the second run's Photon-HDF5
+    file silently overwrote the first one's.
+    """
+    from pybromo.timestamps import AlexSmFretSimulation
+
+    S, _ = _make_alex_simulation(tmp_path)
+    common = {
+        "bg_rate_d": 100,
+        "bg_rate_a": 100,
+        "alex_period": 1e-3,
+        "d_duty": 0.4,
+        "a_duty": 0.4,
+    }
+    names = {
+        AlexSmFretSimulation(S, ALEX_EM_RATES, [0.5], [2], direct_exc=dx, **common).filename for dx in (0.05, 0.14)
+    }
+    assert len(names) == 2
+
+    S.store.h5file.close()
+
+
 def test_AlexSmFretSimulation(tmp_path) -> None:
     S, alex_sim = _make_alex_simulation(tmp_path)
     alex_sim.run(np.random.RandomState(42))

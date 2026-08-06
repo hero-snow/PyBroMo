@@ -21,7 +21,7 @@ import warnings
 
 from .diffusion import Box, Particles, ParticlesSimulation, hashfunc
 from .psflib import GaussianPSF, NumericPSF
-from .timestamps import TimestampSimulation
+from .timestamps import AlexSmFretSimulation, TimestampSimulation
 from .utils import hdf5
 
 

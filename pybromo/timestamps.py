@@ -518,7 +518,13 @@ class AlexSmFretSimulation(TimestampSimulation):
 
     def _compact_repr(self):
         s_base = super()._compact_repr()
-        s_alex = f"ALEX_T{self.alex_period:.1e}_d{self.d_duty:.1f}_a{self.a_duty:.1f}_L{self.leakage:.1f}_dir{self.direct_exc:.1f}"
+        # `.3g`, not `.1f`: the file name is the only thing separating two runs,
+        # and `.1f` rounded e.g. direct_exc 0.05 and 0.14 both to "0.1", so the
+        # second run silently overwrote the first one's Photon-HDF5 file.
+        s_alex = (
+            f"ALEX_T{self.alex_period:.1e}_d{self.d_duty:.3g}_a{self.a_duty:.3g}"
+            f"_L{self.leakage:.3g}_dir{self.direct_exc:.3g}"
+        )
         return s_base + "_" + s_alex
 
     def run(self, rs, overwrite=True, skip_existing=False, path=None, chunksize=None, save_pos=False) -> None:

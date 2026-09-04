@@ -9,3 +9,6 @@ pybromo.egg-info
 dist/
 .vscode/
 *.h5
+
+# Developer-local MCP server configuration (machine-specific absolute paths)
+.mcp.json

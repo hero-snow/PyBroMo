@@ -339,6 +339,21 @@ def test_diffusion_sim_core_gpsf() -> None:
     _test_diffusion_sim_core(pbm.GaussianPSF())
 
 
+def test_gaussian_psf_eval() -> None:
+    """Regression: `GaussianPSF.eval` must not rely on caller frame locals.
+
+    numexpr looked up `xc`/`sx`/... in the method's locals, so an
+    unused-variable autofix renaming them to `_xc`/`_sx` made every call raise
+    `KeyError: 'sx'`. Nothing in the package calls `eval`, so the suite stayed
+    green while the public method was dead.
+    """
+    psf = pbm.GaussianPSF(sx=0.2e-6, sy=0.2e-6, sz=0.6e-6)
+    x = np.array([0.0, 0.2e-6])
+    zeros = np.zeros_like(x)
+    assert np.allclose(psf.eval(x, zeros, zeros), [1.0, np.exp(-0.5)])
+    assert np.allclose(psf.eval(zeros, zeros, np.array([0.0, 0.6e-6])), [1.0, np.exp(-0.5)])
+
+
 def test_simulate_timestamps() -> None:
     hash_ = create_diffusion_sim()
     S = pbm.ParticlesSimulation.from_datafile(hash_, mode="w")
@@ -529,10 +544,18 @@ def test_timestamps_from_counts_vectorized() -> None:
 ALEX_EM_RATES = [100e3]
 
 
+def _alex_sim_for(S):
+    """Build the `AlexSmFretSimulation` these tests use for a given `S`."""
+    from pybromo.timestamps import AlexSmFretSimulation
+
+    return AlexSmFretSimulation(
+        S, ALEX_EM_RATES, [0.5], [2], bg_rate_d=100, bg_rate_a=100, alex_period=1e-3, d_duty=0.4, a_duty=0.4
+    )
+
+
 def _make_alex_simulation(tmp_path):
     """Build a small, fully simulated ALEX setup under `tmp_path`."""
     from pybromo.diffusion import Box, GaussianPSF, Particles, ParticlesSimulation
-    from pybromo.timestamps import AlexSmFretSimulation
 
     t_step, t_max = 1e-6, 0.02
     # Box kept tight around the PSF so that the 2 particles stay in focus long
@@ -546,10 +569,7 @@ def _make_alex_simulation(tmp_path):
     # leaves empty. Without it these tests silently simulated zero photons.
     S.simulate_diffusion(total_emission=False, path=str(tmp_path), verbose=False)
 
-    alex_sim = AlexSmFretSimulation(
-        S, ALEX_EM_RATES, [0.5], [2], bg_rate_d=100, bg_rate_a=100, alex_period=1e-3, d_duty=0.4, a_duty=0.4
-    )
-    return S, alex_sim
+    return S, _alex_sim_for(S)
 
 
 def _alex_timestamp_data(S):
@@ -582,6 +602,9 @@ def test_alex_filename_separates_close_parameters(tmp_path) -> None:
         AlexSmFretSimulation(S, ALEX_EM_RATES, [0.5], [2], direct_exc=dx, **common).filename for dx in (0.05, 0.14)
     }
     assert len(names) == 2
+    # `t_max_%ds` in the shared `_compact_repr` collapsed every sub-second
+    # simulation to "t_max_0s" the same way.
+    assert all("t_max_0.02s" in name for name in names)
 
     S.store.h5file.close()
 
@@ -666,6 +689,76 @@ def test_alex_skip_existing_does_not_append(tmp_path) -> None:
     S.ts_store.h5file.close()
 
 
+def test_alex_skip_existing_still_exports(tmp_path) -> None:
+    """Regression: a skipped run must still bind the existing D/A arrays.
+
+    The `skip_existing` branch returned before assigning `S._timestamps_d`/`_a`,
+    so `run()` printed "Completed" and the next `save_photon_hdf5()` died with
+    `AttributeError: ... has no attribute '_timestamps_d'`. Only a simulation
+    reloaded from disk shows it: within one session the attributes are left
+    over from the run that wrote the timestamps.
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    hash_ = S.store.filepath.stem.split("_")[1]
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+    S = pbm.ParticlesSimulation.from_datafile(hash_, path=str(tmp_path), mode="a")
+    alex_sim = _alex_sim_for(S)
+    alex_sim.run(np.random.RandomState(42), overwrite=False, skip_existing=True)
+    alex_sim.save_photon_hdf5()
+
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+    assert alex_sim.filepath.exists()
+
+
+def test_alex_partial_store_is_rejected(tmp_path) -> None:
+    """Regression: half an ALEX pair in the store must not report success.
+
+    Skipping on D and then returning meant the A array was never created, yet
+    `run()` still reported "Completed".
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    (name_a,) = S.timestamps_match_pattern("alex_a_")
+    S.ts_store.h5file.remove_node("/timestamps", name_a)
+    S.ts_store.h5file.remove_node("/timestamps", name_a + "_par")
+
+    with pytest.raises(ValueError, match="Incomplete ALEX timestamps"):
+        alex_sim.run(np.random.RandomState(42), overwrite=False, skip_existing=True)
+
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+
+def test_alex_photon_hdf5_keeps_caller_identity(tmp_path) -> None:
+    """Regression: caller identity must win, and the caller's dict stay intact.
+
+    `_make_photon_hdf5` called `identity.update(author=...)`, which discarded
+    the author the caller passed *and* rewrote their dict in place -- exactly
+    what the documented B.3 notebook workflow does. The same method also wrote
+    `round(timeslice)` as `acquisition_duration`, so every sub-second
+    simulation claimed a 0 s acquisition.
+    """
+    import tables
+
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    identity = {"author": "Author Name", "author_affiliation": "Research Institution"}
+    alex_sim.save_photon_hdf5(identity=identity)
+    t_max = S.t_max
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+    assert identity == {"author": "Author Name", "author_affiliation": "Research Institution"}
+    with tables.open_file(str(alex_sim.filepath)) as h5file:
+        assert h5file.root.identity.author.read().decode() == "Author Name"
+        assert h5file.root.identity.author_affiliation.read().decode() == "Research Institution"
+        assert h5file.root.acquisition_duration.read() == pytest.approx(t_max)
+
+
 def test_check_per_particle_emission_rejects_truncated(tmp_path) -> None:
     """Regression: a partially written `emission` array must not pass the guard.
 
@@ -682,3 +775,16 @@ def test_check_per_particle_emission_rejects_truncated(tmp_path) -> None:
     # The guard runs before `open_store_timestamp`, so there is no `ts_store`.
     assert not hasattr(S, "ts_store")
     S.store.h5file.close()
+
+
+def test_print_children(tmp_path, capsys) -> None:
+    """Regression: `print_children` still called the Python-2 `itervalues()`.
+
+    Every call raised `AttributeError: 'dict' object has no attribute
+    'itervalues'` after printing the group list.
+    """
+    S, _ = _make_alex_simulation(tmp_path)
+    pbm.hdf5.print_children(S.store.h5file, "/trajectories")
+    S.store.h5file.close()
+
+    assert "emission" in capsys.readouterr().out

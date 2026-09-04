@@ -1525,23 +1525,33 @@ class ParticlesSimulation:
         if comp_filter is not None:
             kw.update(comp_filter=comp_filter)
 
+        # Check both arrays up-front: creating D and only then discovering that A
+        # already exists would leave a half-written store behind.
+        existing = [name for name in (name_d, name_a) if name in self.ts_store.h5file.root.timestamps]
+        if existing and not overwrite:
+            if not skip_existing:
+                msg = f"Timestamp array already exist ({existing[0]})"
+                raise ExistingArrayError(msg)
+            if len(existing) == 1:
+                msg = (
+                    f"Incomplete ALEX timestamps in the store: '{existing[0]}' is present but its "
+                    f"D/A counterpart is not. Re-run with `overwrite=True`."
+                )
+                raise ValueError(msg)
+            # Bind the *existing* arrays rather than returning empty-handed:
+            # `AlexSmFretSimulation.merge_da()` reads `self._timestamps_d`/`_a`
+            # straight after `run()`, so a bare `return` here made the following
+            # `save_photon_hdf5()` fail with AttributeError.
+            print(" - Skipping, ALEX D and A timestamps already present.")
+            self._timestamps_d, self._tparticles_d, self._tpositions_d = self.get_timestamp_data(name_d)
+            self._timestamps_a, self._tparticles_a, self._tpositions_a = self.get_timestamp_data(name_a)
+            return
+
         kw.update(name=name_d, max_rates=max_rates_d_laser, bg_rate=bg_rate_d)
-        try:
-            self._timestamps_d, self._tparticles_d, self._tpositions_d = self.ts_store.add_timestamps(**kw)
-        except ExistingArrayError:
-            if skip_existing:
-                print(" - Skipping, ALEX D timestamps already present.")
-                return
-            raise
+        self._timestamps_d, self._tparticles_d, self._tpositions_d = self.ts_store.add_timestamps(**kw)
 
         kw.update(name=name_a, max_rates=max_rates_a_laser, bg_rate=bg_rate_a)
-        try:
-            self._timestamps_a, self._tparticles_a, self._tpositions_a = self.ts_store.add_timestamps(**kw)
-        except ExistingArrayError:
-            if skip_existing:
-                print(" - Skipping, ALEX A timestamps already present.")
-                return
-            raise
+        self._timestamps_a, self._tparticles_a, self._tpositions_a = self.ts_store.add_timestamps(**kw)
 
         self.ts_group._v_attrs["init_random_state"] = rs.get_state()
         self.ts_group._v_attrs["ALEX"] = 1

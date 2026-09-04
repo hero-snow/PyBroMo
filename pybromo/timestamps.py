@@ -256,13 +256,18 @@ class TimestampSimulation:
         print(str(self), flush=True)
 
     def _compact_repr(self) -> str:
+        # `.6g` everywhere, never `%d`: the file name is the only thing keeping
+        # two runs apart, and truncating to integers made e.g. every sub-second
+        # `t_max` collapse to "t_max_0s" and two `em_rates` less than 1 kcps
+        # apart share a name, so the second run silently overwrote the first
+        # one's Photon-HDF5 file. `.6g` also absorbs float noise (0.1 * 100).
         part_seq = ("%d_s%d" % (np, pop.start) for np, pop in zip(self.num_particles, self.populations, strict=False))
         s1 = "P_" + "_".join(part_seq)
         s2 = "D_" + "_".join(f"{D:.1e}" for D in self.D_values)
-        s3 = "E_" + "_".join("%d" % (E * 100) for E in self.E_values)
-        s4 = "EmTot_" + "_".join("%dk" % (em * 1e-3) for em in self.em_rates)
-        s5 = "BgD%d_BgA%d" % (self.bg_rate_d, self.bg_rate_a)
-        s6 = "t_max_%ds" % self.timeslice
+        s3 = "E_" + "_".join(f"{E * 100:.6g}" for E in self.E_values)
+        s4 = "EmTot_" + "_".join(f"{em * 1e-3:.6g}k" for em in self.em_rates)
+        s5 = f"BgD{self.bg_rate_d:.6g}_BgA{self.bg_rate_a:.6g}"
+        s6 = f"t_max_{self.timeslice:.6g}s"
         return f"{s1}_{s2}_{s3}_{s4}_{s5}_{s6}"
 
     @property
@@ -428,9 +433,12 @@ class TimestampSimulation:
             identity = {}
 
         description = self.__str__()
-        acquisition_duration = self.timeslice
+        # Keep the fractional part: Photon-HDF5 declares `acquisition_duration`
+        # as a scalar in seconds, and `round()` turned every sub-second
+        # simulation into a file claiming a 0 s acquisition.
+        acquisition_duration = float(self.timeslice)
         return {
-            "acquisition_duration": round(acquisition_duration),
+            "acquisition_duration": acquisition_duration,
             "description": description,
             "photon_data": photon_data,
             "setup": setup,
@@ -597,10 +605,13 @@ class AlexSmFretSimulation(TimestampSimulation):
             excitation_wavelengths=np.array([532e-9, 635e-9]),
             detection_wavelengths=np.array([580e-9, 670e-9]),
         )
-        if identity is None:
-            identity = {"author": "PyBroMo ALEX Simulation", "author_affiliation": "PyBroMo"}
-        else:
-            identity.update(author="PyBroMo ALEX Simulation", author_affiliation="PyBroMo")
+        # Copy, then `setdefault`: the caller's own author metadata must win and
+        # their dict must not be mutated. This used to `update()` in place, so a
+        # caller-supplied author was both discarded from the file and clobbered
+        # in the dict they passed in.
+        identity = {} if identity is None else dict(identity)
+        identity.setdefault("author", "PyBroMo ALEX Simulation")
+        identity.setdefault("author_affiliation", "PyBroMo")
         data["identity"] = identity
         # Define D-only and A-only excitation periods for FRETBursts.
         # Photon-HDF5 wants the alternation period and its windows in

@@ -830,6 +830,34 @@ class ParticlesSimulation:
             names.append(node.name)
         return names
 
+    def _check_per_particle_emission(self) -> None:
+        """Fail loudly if the per-particle `emission` array is missing or short.
+
+        All the timestamp simulations read `self.emission`, but
+        :meth:`simulate_diffusion` only fills it when called with
+        ``total_emission=False`` (the default stores just `emission_tot`).
+        Without this check the array is present but empty -- or, if a previous
+        run was interrupted, only partially written -- so the chunk reads return
+        too few columns and the simulation quietly yields fewer photons than
+        requested, or none at all.
+        """
+        emission = getattr(self, "emission", None)
+        n_stored = 0 if emission is None else emission.shape[1]
+        if n_stored == 0:
+            msg = (
+                "The per-particle `emission` array is empty. Timestamp simulations "
+                "need it, so run `simulate_diffusion(total_emission=False)` "
+                "(the default `total_emission=True` only stores `emission_tot`)."
+            )
+            raise ValueError(msg)
+        if n_stored < self.n_samples:
+            msg = (
+                f"The per-particle `emission` array holds {n_stored} of the expected "
+                f"{self.n_samples} time steps, so the trajectory simulation did not run "
+                "to completion. Re-run `simulate_diffusion(total_emission=False)`."
+            )
+            raise ValueError(msg)
+
     @staticmethod
     def _timestamps_from_counts(counts, time_axis, max_rate, position=None, sort=True):
         """Compute timestamps from timetraces of counts.
@@ -1042,6 +1070,7 @@ class ParticlesSimulation:
                 `timeslice` seconds. If None, simulate until `self.t_max`.
 
         """
+        self._check_per_particle_emission()
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
@@ -1176,6 +1205,7 @@ class ParticlesSimulation:
                 `timeslice` seconds. If None, simulate until `self.t_max`.
 
         """
+        self._check_per_particle_emission()
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
@@ -1425,8 +1455,11 @@ class ParticlesSimulation:
 
         Arguments:
             populations (list of slices): slices to `self.particles`.
-            max_rates_d_laser (list): peak emission rates for D-laser.
-            max_rates_a_laser (list): peak emission rates for A-laser.
+            max_rates_d_laser (list): *total* peak emission rate under D-laser
+                excitation, one per population. This method applies the
+                (1 - E) / E split itself, so pass the un-split rate.
+            max_rates_a_laser (list): peak A emission rate under A-laser
+                excitation, one per population.
             E_values (list): FRET efficiency for each population.
             leakage (float): fraction of D emission in A channel.
             direct_exc (float): fraction of A excitation by D-laser.
@@ -1443,6 +1476,7 @@ class ParticlesSimulation:
             save_pos (bool): whether to save particle positions.
 
         """
+        self._check_per_particle_emission()
         self.open_store_timestamp(path=path)
         rs = self._get_group_randomstate(rs, seed, self.ts_group)
         if t_chunksize is None:
@@ -1491,23 +1525,33 @@ class ParticlesSimulation:
         if comp_filter is not None:
             kw.update(comp_filter=comp_filter)
 
+        # Check both arrays up-front: creating D and only then discovering that A
+        # already exists would leave a half-written store behind.
+        existing = [name for name in (name_d, name_a) if name in self.ts_store.h5file.root.timestamps]
+        if existing and not overwrite:
+            if not skip_existing:
+                msg = f"Timestamp array already exist ({existing[0]})"
+                raise ExistingArrayError(msg)
+            if len(existing) == 1:
+                msg = (
+                    f"Incomplete ALEX timestamps in the store: '{existing[0]}' is present but its "
+                    f"D/A counterpart is not. Re-run with `overwrite=True`."
+                )
+                raise ValueError(msg)
+            # Bind the *existing* arrays rather than returning empty-handed:
+            # `AlexSmFretSimulation.merge_da()` reads `self._timestamps_d`/`_a`
+            # straight after `run()`, so a bare `return` here made the following
+            # `save_photon_hdf5()` fail with AttributeError.
+            print(" - Skipping, ALEX D and A timestamps already present.")
+            self._timestamps_d, self._tparticles_d, self._tpositions_d = self.get_timestamp_data(name_d)
+            self._timestamps_a, self._tparticles_a, self._tpositions_a = self.get_timestamp_data(name_a)
+            return
+
         kw.update(name=name_d, max_rates=max_rates_d_laser, bg_rate=bg_rate_d)
-        try:
-            self._timestamps_d, self._tparticles_d, self._tpositions_d = self.ts_store.add_timestamps(**kw)
-        except ExistingArrayError:
-            if skip_existing:
-                print(" - Skipping, ALEX D timestamps already present.")
-            else:
-                raise
+        self._timestamps_d, self._tparticles_d, self._tpositions_d = self.ts_store.add_timestamps(**kw)
 
         kw.update(name=name_a, max_rates=max_rates_a_laser, bg_rate=bg_rate_a)
-        try:
-            self._timestamps_a, self._tparticles_a, self._tpositions_a = self.ts_store.add_timestamps(**kw)
-        except ExistingArrayError:
-            if skip_existing:
-                print(" - Skipping, ALEX A timestamps already present.")
-            else:
-                raise
+        self._timestamps_a, self._tparticles_a, self._tpositions_a = self.ts_store.add_timestamps(**kw)
 
         self.ts_group._v_attrs["init_random_state"] = rs.get_state()
         self.ts_group._v_attrs["ALEX"] = 1

@@ -256,13 +256,18 @@ class TimestampSimulation:
         print(str(self), flush=True)
 
     def _compact_repr(self) -> str:
+        # `.6g` everywhere, never `%d`: the file name is the only thing keeping
+        # two runs apart, and truncating to integers made e.g. every sub-second
+        # `t_max` collapse to "t_max_0s" and two `em_rates` less than 1 kcps
+        # apart share a name, so the second run silently overwrote the first
+        # one's Photon-HDF5 file. `.6g` also absorbs float noise (0.1 * 100).
         part_seq = ("%d_s%d" % (np, pop.start) for np, pop in zip(self.num_particles, self.populations, strict=False))
         s1 = "P_" + "_".join(part_seq)
         s2 = "D_" + "_".join(f"{D:.1e}" for D in self.D_values)
-        s3 = "E_" + "_".join("%d" % (E * 100) for E in self.E_values)
-        s4 = "EmTot_" + "_".join("%dk" % (em * 1e-3) for em in self.em_rates)
-        s5 = "BgD%d_BgA%d" % (self.bg_rate_d, self.bg_rate_a)
-        s6 = "t_max_%ds" % self.timeslice
+        s3 = "E_" + "_".join(f"{E * 100:.6g}" for E in self.E_values)
+        s4 = "EmTot_" + "_".join(f"{em * 1e-3:.6g}k" for em in self.em_rates)
+        s5 = f"BgD{self.bg_rate_d:.6g}_BgA{self.bg_rate_a:.6g}"
+        s6 = f"t_max_{self.timeslice:.6g}s"
         return f"{s1}_{s2}_{s3}_{s4}_{s5}_{s6}"
 
     @property
@@ -428,9 +433,12 @@ class TimestampSimulation:
             identity = {}
 
         description = self.__str__()
-        acquisition_duration = self.timeslice
+        # Keep the fractional part: Photon-HDF5 declares `acquisition_duration`
+        # as a scalar in seconds, and `round()` turned every sub-second
+        # simulation into a file claiming a 0 s acquisition.
+        acquisition_duration = float(self.timeslice)
         return {
-            "acquisition_duration": round(acquisition_duration),
+            "acquisition_duration": acquisition_duration,
             "description": description,
             "photon_data": photon_data,
             "setup": setup,
@@ -518,7 +526,13 @@ class AlexSmFretSimulation(TimestampSimulation):
 
     def _compact_repr(self):
         s_base = super()._compact_repr()
-        s_alex = f"ALEX_T{self.alex_period:.1e}_d{self.d_duty:.1f}_a{self.a_duty:.1f}_L{self.leakage:.1f}_dir{self.direct_exc:.1f}"
+        # `.3g`, not `.1f`: the file name is the only thing separating two runs,
+        # and `.1f` rounded e.g. direct_exc 0.05 and 0.14 both to "0.1", so the
+        # second run silently overwrote the first one's Photon-HDF5 file.
+        s_alex = (
+            f"ALEX_T{self.alex_period:.1e}_d{self.d_duty:.3g}_a{self.a_duty:.3g}"
+            f"_L{self.leakage:.3g}_dir{self.direct_exc:.3g}"
+        )
         return s_base + "_" + s_alex
 
     def run(self, rs, overwrite=True, skip_existing=False, path=None, chunksize=None, save_pos=False) -> None:
@@ -529,7 +543,10 @@ class AlexSmFretSimulation(TimestampSimulation):
         # We need to simulate both D and A channels in one pass to maintain ALEX timing
         self.S.simulate_timestamps_alex(
             populations=self.populations,
-            max_rates_d_laser=self.em_rates_d,
+            # Pass the *total* peak emission rate, not `em_rates_d`: the callee
+            # applies the (1 - E) / E split itself, so passing the already-split
+            # `em_rates_d` would apply (1 - E) twice.
+            max_rates_d_laser=self.em_rates,
             max_rates_a_laser=self.em_rates,  # Assuming acceptor laser peak matches em_rates
             E_values=self.E_values,
             leakage=self.leakage,
@@ -577,27 +594,35 @@ class AlexSmFretSimulation(TimestampSimulation):
     def _make_photon_hdf5(self, identity=None):
         data = super()._make_photon_hdf5(identity=identity)
 
-        # Add ALEX specific metadata
+        # Add ALEX specific metadata. The per-excitation-source tuples must
+        # carry one entry *per laser* (here 2): FRETBursts recognizes us-ALEX
+        # by `excitation_alternated == (True, True)`, so a 1-element tuple made
+        # it fall back to plain smFRET and ignore the alternation periods.
         data["setup"].update(
             modulated_excitation=True,
-            excitation_alternated=(True,),
-            excitation_cw=(True,),
+            excitation_alternated=(True, True),
+            excitation_cw=(True, True),
             excitation_wavelengths=np.array([532e-9, 635e-9]),
             detection_wavelengths=np.array([580e-9, 670e-9]),
         )
-        if identity is None:
-            identity = {"author": "PyBroMo ALEX Simulation", "author_affiliation": "PyBroMo"}
-        else:
-            identity.update(author="PyBroMo ALEX Simulation", author_affiliation="PyBroMo")
+        # Copy, then `setdefault`: the caller's own author metadata must win and
+        # their dict must not be mutated. This used to `update()` in place, so a
+        # caller-supplied author was both discarded from the file and clobbered
+        # in the dict they passed in.
+        identity = {} if identity is None else dict(identity)
+        identity.setdefault("author", "PyBroMo ALEX Simulation")
+        identity.setdefault("author_affiliation", "PyBroMo")
         data["identity"] = identity
-        # Define D-only and A-only excitation periods for FRETBursts
-        # These are in units of Phase [0, 1]
-        # In our implementation:
-        # D-laser: [0, d_duty]
-        # A-laser: [0.5, 0.5 + a_duty]
+        # Define D-only and A-only excitation periods for FRETBursts.
+        # Photon-HDF5 wants the alternation period and its windows in
+        # *timestamp* units, not seconds or phase -- `_sim_timestamps_alex`
+        # turns the D laser on over phase [0, d_duty) and the A laser over
+        # [0.5, 0.5 + a_duty) of each period.
+        period = int(round(self.alex_period / self.clk_p))
         data["photon_data"]["measurement_specs"].update(
-            alex_excitation_period1=np.array([0, self.d_duty]),
-            alex_excitation_period2=np.array([0.5, 0.5 + self.a_duty]),
-            alex_period=self.alex_period,
+            measurement_type="smFRET-usALEX",
+            alex_excitation_period1=np.array([0, round(self.d_duty * period)], dtype="int64"),
+            alex_excitation_period2=np.array([round(0.5 * period), round((0.5 + self.a_duty) * period)], dtype="int64"),
+            alex_period=period,
         )
         return data

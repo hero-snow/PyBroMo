@@ -339,6 +339,21 @@ def test_diffusion_sim_core_gpsf() -> None:
     _test_diffusion_sim_core(pbm.GaussianPSF())
 
 
+def test_gaussian_psf_eval() -> None:
+    """Regression: `GaussianPSF.eval` must not rely on caller frame locals.
+
+    numexpr looked up `xc`/`sx`/... in the method's locals, so an
+    unused-variable autofix renaming them to `_xc`/`_sx` made every call raise
+    `KeyError: 'sx'`. Nothing in the package calls `eval`, so the suite stayed
+    green while the public method was dead.
+    """
+    psf = pbm.GaussianPSF(sx=0.2e-6, sy=0.2e-6, sz=0.6e-6)
+    x = np.array([0.0, 0.2e-6])
+    zeros = np.zeros_like(x)
+    assert np.allclose(psf.eval(x, zeros, zeros), [1.0, np.exp(-0.5)])
+    assert np.allclose(psf.eval(zeros, zeros, np.array([0.0, 0.6e-6])), [1.0, np.exp(-0.5)])
+
+
 def test_simulate_timestamps() -> None:
     hash_ = create_diffusion_sim()
     S = pbm.ParticlesSimulation.from_datafile(hash_, mode="w")
@@ -526,32 +541,250 @@ def test_timestamps_from_counts_vectorized() -> None:
     assert np.allclose(pos_orig, pos_vec, equal_nan=True)
 
 
-def test_AlexSmFretSimulation() -> None:
-    import os
+ALEX_EM_RATES = [100e3]
 
-    import numpy as np
 
-    from pybromo.diffusion import Box, GaussianPSF, Particles, ParticlesSimulation
+def _alex_sim_for(S):
+    """Build the `AlexSmFretSimulation` these tests use for a given `S`."""
     from pybromo.timestamps import AlexSmFretSimulation
 
-    t_step, t_max = 1e-6, 0.01
-    box = Box(-1e-6, 1e-6, -1e-6, 1e-6, -1e-6, 1e-6)
+    return AlexSmFretSimulation(
+        S, ALEX_EM_RATES, [0.5], [2], bg_rate_d=100, bg_rate_a=100, alex_period=1e-3, d_duty=0.4, a_duty=0.4
+    )
+
+
+def _make_alex_simulation(tmp_path):
+    """Build a small, fully simulated ALEX setup under `tmp_path`."""
+    from pybromo.diffusion import Box, GaussianPSF, Particles, ParticlesSimulation
+
+    t_step, t_max = 1e-6, 0.02
+    # Box kept tight around the PSF so that the 2 particles stay in focus long
+    # enough to emit a usable number of photons within `t_max`.
+    box = Box(-0.5e-6, 0.5e-6, -0.5e-6, 0.5e-6, -0.5e-6, 0.5e-6)
     psf = GaussianPSF()
     particles = Particles(num_particles=2, D=1e-11, box=box)
     S = ParticlesSimulation(t_step=t_step, t_max=t_max, particles=particles, box=box, psf=psf)
-    S.simulate_diffusion()
+    # `total_emission=False` is required: timestamp simulation reads the
+    # per-particle `emission` array, which the `total_emission=True` default
+    # leaves empty. Without it these tests silently simulated zero photons.
+    S.simulate_diffusion(total_emission=False, path=str(tmp_path), verbose=False)
 
-    em_rates, E_values, num_particles = [10e3], [0.5], [2]
-    alex_sim = AlexSmFretSimulation(
-        S, em_rates, E_values, num_particles, bg_rate_d=100, bg_rate_a=100, alex_period=1e-3, d_duty=0.4, a_duty=0.4
-    )
-    rs = np.random.RandomState(42)
-    alex_sim.run(rs)
+    return S, _alex_sim_for(S)
+
+
+def _alex_timestamp_data(S):
+    """Return the (D, A) timestamp/particle arrays through the public API."""
+    (name_d,) = S.timestamps_match_pattern("alex_d_")
+    (name_a,) = S.timestamps_match_pattern("alex_a_")
+    ts_d, par_d, _ = S.get_timestamp_data(name_d)
+    ts_a, par_a, _ = S.get_timestamp_data(name_a)
+    return ts_d, par_d, ts_a, par_a
+
+
+def test_alex_filename_separates_close_parameters(tmp_path) -> None:
+    """Regression: near parameter values must not collapse to one file name.
+
+    `_compact_repr` formatted leakage and direct excitation with `.1f`, so
+    e.g. 0.05 and 0.14 both became "0.1" and the second run's Photon-HDF5
+    file silently overwrote the first one's.
+    """
+    from pybromo.timestamps import AlexSmFretSimulation
+
+    S, _ = _make_alex_simulation(tmp_path)
+    common = {
+        "bg_rate_d": 100,
+        "bg_rate_a": 100,
+        "alex_period": 1e-3,
+        "d_duty": 0.4,
+        "a_duty": 0.4,
+    }
+    names = {
+        AlexSmFretSimulation(S, ALEX_EM_RATES, [0.5], [2], direct_exc=dx, **common).filename for dx in (0.05, 0.14)
+    }
+    assert len(names) == 2
+    # `t_max_%ds` in the shared `_compact_repr` collapsed every sub-second
+    # simulation to "t_max_0s" the same way.
+    assert all("t_max_0.02s" in name for name in names)
+
+    S.store.h5file.close()
+
+
+def test_AlexSmFretSimulation(tmp_path) -> None:
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+
+    ts_d, par_d, _ts_a, par_a = _alex_timestamp_data(S)
+
+    # Regression: `run()` must forward the *total* peak rate. The simulation
+    # applies the (1 - E) / E split itself, so forwarding the pre-split
+    # `em_rates_d` (= em_rates * (1 - E)) applied (1 - E) twice.
+    assert list(ts_d.attrs["max_rates"]) == ALEX_EM_RATES
+
+    # Both channels must actually contain photons emitted by the particles
+    # (particle index < num_particles; the background uses index num_particles).
+    assert (par_d[:] < S.num_particles).any()
+    assert (par_a[:] < S.num_particles).any()
+
     alex_sim.save_photon_hdf5()
+    assert alex_sim.filepath.exists()
 
-    assert os.path.exists(alex_sim.filepath)
-    os.remove(alex_sim.filepath)
     S.store.h5file.close()
     S.ts_store.h5file.close()
-    os.remove(S.store.filepath)
-    os.remove(S.ts_store.filepath)
+
+
+def test_alex_photon_hdf5_is_usalex(tmp_path) -> None:
+    """Regression: the exported Photon-HDF5 must be recognizable as us-ALEX.
+
+    `excitation_alternated` held a single entry instead of one per laser, and
+    the alternation period/windows were written in seconds and phase instead of
+    timestamp units. FRETBursts then loaded the file as plain smFRET and
+    dropped the alternation entirely.
+    """
+    import tables
+
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    alex_sim.save_photon_hdf5()
+    clk_p = S.get_timestamp_data(S.timestamps_match_pattern("alex_d_")[0])[0].attrs["clk_p"]
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+    with tables.open_file(str(alex_sim.filepath)) as h5file:
+        setup = h5file.root.setup
+        specs = h5file.root.photon_data.measurement_specs
+        # FRETBursts keys off this exact pair to pick the us-ALEX loader.
+        assert tuple(setup.excitation_alternated.read()) == (True, True)
+        assert tuple(setup.excitation_cw.read()) == (True, True)
+        assert specs.measurement_type.read().decode() == "smFRET-usALEX"
+
+        period = round(alex_sim.alex_period / clk_p)
+        assert specs.alex_period.read() == period
+        assert list(specs.alex_excitation_period1.read()) == [0, round(alex_sim.d_duty * period)]
+        assert list(specs.alex_excitation_period2.read()) == [
+            round(0.5 * period),
+            round((0.5 + alex_sim.a_duty) * period),
+        ]
+
+
+def test_alex_skip_existing_does_not_append(tmp_path) -> None:
+    """Regression: `skip_existing=True` must skip, not re-append.
+
+    `simulate_timestamps_alex` caught `ExistingArrayError` without returning,
+    so a second run printed "Skipping" and then appended a whole second set of
+    timestamps onto the existing arrays, silently doubling the photon stream.
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    ts_d, _par_d, ts_a, _par_a = _alex_timestamp_data(S)
+    nrows_d, nrows_a = ts_d.nrows, ts_a.nrows
+    assert nrows_d > 0
+
+    alex_sim.run(np.random.RandomState(42), overwrite=False, skip_existing=True)
+
+    ts_d, _par_d, ts_a, _par_a = _alex_timestamp_data(S)
+    assert ts_d.nrows == nrows_d
+    assert ts_a.nrows == nrows_a
+
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+
+def test_alex_skip_existing_still_exports(tmp_path) -> None:
+    """Regression: a skipped run must still bind the existing D/A arrays.
+
+    The `skip_existing` branch returned before assigning `S._timestamps_d`/`_a`,
+    so `run()` printed "Completed" and the next `save_photon_hdf5()` died with
+    `AttributeError: ... has no attribute '_timestamps_d'`. Only a simulation
+    reloaded from disk shows it: within one session the attributes are left
+    over from the run that wrote the timestamps.
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    hash_ = S.store.filepath.stem.split("_")[1]
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+    S = pbm.ParticlesSimulation.from_datafile(hash_, path=str(tmp_path), mode="a")
+    alex_sim = _alex_sim_for(S)
+    alex_sim.run(np.random.RandomState(42), overwrite=False, skip_existing=True)
+    alex_sim.save_photon_hdf5()
+
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+    assert alex_sim.filepath.exists()
+
+
+def test_alex_partial_store_is_rejected(tmp_path) -> None:
+    """Regression: half an ALEX pair in the store must not report success.
+
+    Skipping on D and then returning meant the A array was never created, yet
+    `run()` still reported "Completed".
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    (name_a,) = S.timestamps_match_pattern("alex_a_")
+    S.ts_store.h5file.remove_node("/timestamps", name_a)
+    S.ts_store.h5file.remove_node("/timestamps", name_a + "_par")
+
+    with pytest.raises(ValueError, match="Incomplete ALEX timestamps"):
+        alex_sim.run(np.random.RandomState(42), overwrite=False, skip_existing=True)
+
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+
+def test_alex_photon_hdf5_keeps_caller_identity(tmp_path) -> None:
+    """Regression: caller identity must win, and the caller's dict stay intact.
+
+    `_make_photon_hdf5` called `identity.update(author=...)`, which discarded
+    the author the caller passed *and* rewrote their dict in place -- exactly
+    what the documented B.3 notebook workflow does. The same method also wrote
+    `round(timeslice)` as `acquisition_duration`, so every sub-second
+    simulation claimed a 0 s acquisition.
+    """
+    import tables
+
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    alex_sim.run(np.random.RandomState(42))
+    identity = {"author": "Author Name", "author_affiliation": "Research Institution"}
+    alex_sim.save_photon_hdf5(identity=identity)
+    t_max = S.t_max
+    S.store.h5file.close()
+    S.ts_store.h5file.close()
+
+    assert identity == {"author": "Author Name", "author_affiliation": "Research Institution"}
+    with tables.open_file(str(alex_sim.filepath)) as h5file:
+        assert h5file.root.identity.author.read().decode() == "Author Name"
+        assert h5file.root.identity.author_affiliation.read().decode() == "Research Institution"
+        assert h5file.root.acquisition_duration.read() == pytest.approx(t_max)
+
+
+def test_check_per_particle_emission_rejects_truncated(tmp_path) -> None:
+    """Regression: a partially written `emission` array must not pass the guard.
+
+    Only checking for a completely empty array let an interrupted
+    `simulate_diffusion` through, which again yielded too few photons silently.
+    """
+    S, alex_sim = _make_alex_simulation(tmp_path)
+    # Pretend the trajectory simulation died after roughly half the time steps.
+    S.emission.truncate(S.n_samples // 2)
+
+    with pytest.raises(ValueError, match="did not run to completion"):
+        alex_sim.run(np.random.RandomState(0))
+
+    # The guard runs before `open_store_timestamp`, so there is no `ts_store`.
+    assert not hasattr(S, "ts_store")
+    S.store.h5file.close()
+
+
+def test_print_children(tmp_path, capsys) -> None:
+    """Regression: `print_children` still called the Python-2 `itervalues()`.
+
+    Every call raised `AttributeError: 'dict' object has no attribute
+    'itervalues'` after printing the group list.
+    """
+    S, _ = _make_alex_simulation(tmp_path)
+    pbm.hdf5.print_children(S.store.h5file, "/trajectories")
+    S.store.h5file.close()
+
+    assert "emission" in capsys.readouterr().out

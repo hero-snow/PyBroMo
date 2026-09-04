@@ -51,7 +51,7 @@ def print_children(data_file, group="/") -> None:
             print(f"    {node}")
 
     print(f"\nLeaf-nodes in {group}:")
-    for node in base._v_leaves.itervalues():
+    for node in base._v_leaves.values():
         info = node.shape
         if len(info) == 0:
             info = node.read()

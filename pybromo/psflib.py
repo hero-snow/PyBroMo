@@ -66,8 +66,8 @@ class GaussianPSF:
 
     def eval(self, x, y, z):
         """Evaluate the function in (x, y, z)."""
-        _xc, _yc, _zc = self.rc
-        _sx, _sy, _sz = self.s
+        xc, yc, zc = self.rc
+        sx, sy, sz = self.s
 
         ## Method1: direct evaluation
         # return exp(-(((x-xc)**2)/(2*sx**2) + ((y-yc)**2)/(2*sy**2) +\
@@ -77,7 +77,14 @@ class GaussianPSF:
         def arg(s) -> str:
             return f"(({s}-{s}c)**2)/(2*s{s}**2)"
 
-        return NE.evaluate("exp(-({} + {} + {}))".format(arg("x"), arg("y"), arg("z")))
+        # Pass `local_dict` explicitly: by default numexpr picks the variables
+        # out of the caller's frame locals, which linters cannot see -- an
+        # unused-variable autofix once renamed them to `_xc`/`_sx`/... and this
+        # method raised `KeyError: 'sx'` for every call.
+        return NE.evaluate(
+            "exp(-({} + {} + {}))".format(arg("x"), arg("y"), arg("z")),
+            local_dict={"x": x, "y": y, "z": z, "xc": xc, "yc": yc, "zc": zc, "sx": sx, "sy": sy, "sz": sz},
+        )
 
         ## Method3: evaluation with partial function
         # g_arg = lambda t, mu, sig: -((t-mu)**2)/(2*sig**2)
